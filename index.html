@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OSRS Pathing Trainer</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app">
+  <aside id="side">
+    <header class="row spread">
+      <h1>OSRS Pathing Trainer</h1>
+      <button data-act="rules" title="How pathing works (?)">Rules ?</button>
+    </header>
+
+    <nav id="modes"></nav>
+
+    <section class="card row" id="settings">
+      <label>Terrain
+        <select id="terrain">
+          <option value="any">Any</option>
+          <option value="pillars">Pillars</option>
+          <option value="rocks">Rocks</option>
+          <option value="walls">Walls &amp; fences</option>
+          <option value="rooms">Rooms</option>
+          <option value="mixed">Mixed</option>
+        </select>
+      </label>
+      <label>Grid
+        <select id="size"><option value="12">12</option><option value="16">16</option><option value="20">20</option></select>
+      </label>
+      <label class="check"><input type="checkbox" id="run"> Run</label>
+      <label>Overlay
+        <select id="overlay">
+          <option value="none">None</option>
+          <option value="dist">Steps</option>
+          <option value="order">Search order</option>
+        </select>
+      </label>
+    </section>
+
+    <section class="card" id="promptCard"></section>
+    <section class="card hidden" id="resultCard"></section>
+
+    <section class="card hidden" id="sandboxPanel">
+      <h2>Sandbox</h2>
+      <div class="row tools">
+        <button data-tool="walk">Walk <kbd>W</kbd></button>
+        <button data-tool="rock">Rock <kbd>B</kbd></button>
+        <button data-tool="wall">Wall <kbd>L</kbd></button>
+        <button data-tool="player">Player <kbd>P</kbd></button>
+        <button data-tool="npc">NPC <kbd>N</kbd></button>
+      </div>
+      <div class="row">
+        <label>NPC size <select id="npcSize"><option>1</option><option selected>2</option><option>3</option><option>4</option><option>5</option></select></label>
+        <button data-act="sbRandom">Random map</button>
+        <button data-act="sbClear">Clear</button>
+      </div>
+      <p class="hint">Walk: click a tile to path there, or click the NPC to attack it. Rock: click or drag. Wall: click near a tile edge (drag to draw). NPC: click to place, click it again to remove.</p>
+      <div id="sbInfo"></div>
+    </section>
+
+    <section class="card small" id="hover">&nbsp;</section>
+    <section class="card" id="statsCard"></section>
+
+    <footer class="keys">
+      <kbd>1</kbd>–<kbd>7</kbd> modes · <kbd>Enter</kbd> submit/next · <kbd>Backspace</kbd> undo · <kbd>N</kbd> skip ·
+      <kbd>A</kbd> replay · <kbd>O</kbd> overlay · <kbd>R</kbd> run · <kbd>?</kbd> rules
+    </footer>
+  </aside>
+
+  <main id="board">
+    <canvas id="cv"></canvas>
+    <div id="toast"></div>
+  </main>
+</div>
+
+<div id="rules" class="modal hidden">
+  <div class="box">
+    <div class="row spread"><h2>How OSRS pathing works</h2><button data-act="closeRules">Close (Esc)</button></div>
+    <ol>
+      <li><b>Fewest steps, and a diagonal counts as one step.</b> When you click, the game runs a breadth-first
+        search outward from your tile. You always take a route with the fewest steps.</li>
+      <li><b>Ties are settled by the search order.</b> From each tile the search tries neighbours in the order
+        <b>W, E, S, N, SW, SE, NW, NE</b>. The route is then read <i>backwards</i> from the destination: each
+        tile is entered from whichever neighbour the search expanded first.</li>
+      <li><b>In open ground you go straight first and diagonal last.</b> That falls out of the order above.
+        Click 3 east and 1 north and you go E, E, NE. Click 1 east and 3 north and you go N, N, NE.</li>
+      <li><b>No corner cutting.</b> A diagonal step needs both tiles beside it to be walkable, and it's
+        blocked if a wall touches the corner it passes.</li>
+      <li><b>Ticks.</b> Running moves 2 route tiles per tick, walking moves 1. A run with an odd number of steps ends with a
+        1-tile tick. Only the tile you're on at the end of a tick counts as where you're standing. Tiles you run over
+        mid-tick don't count.</li>
+      <li><b>Unreachable clicks.</b> If nobody can stand on the clicked tile, the game takes every tile you
+        <i>can</i> reach inside a 21×21 square around it. It picks the closest in a straight line
+        (dx² + dy²). Ties go to fewer steps, then the westmost tile, then the southmost.</li>
+      <li><b>Melee.</b> Attacking an NPC stops you on the first tile the search reaches that shares an
+        <i>edge</i> with the NPC. Corners don't count, and neither do tiles with a wall between you and the NPC. If you're standing
+        diagonal to it, you step west or east before you'd step south or north.</li>
+      <li><b>NPCs don't block your route.</b> The route runs straight under NPCs. A few NPCs, such as Brawlers, do
+        block your steps.</li>
+      <li><b>Long routes get cut.</b> A route keeps only its first 25 turns. You stop at the 25th and have to click
+        again.</li>
+    </ol>
+    <h3>Modes</h3>
+    <ul>
+      <li><b>Trace</b>: click every tile of the route in order.</li>
+      <li><b>Tick</b>: say where you stand at the end of tick N.</li>
+      <li><b>Unreachable</b>: say where you end up when the click target can't be stood on.</li>
+      <li><b>Melee</b>: say which tile you attack an NPC from.</li>
+      <li><b>Mixed</b>: a random mix that leans towards your weakest mode.</li>
+      <li><b>Misses</b>: replays questions you got wrong. Get one right and it drops off the list.</li>
+      <li><b>Sandbox</b>: build your own maps and click around. The <i>Steps</i> and <i>Search order</i> overlays
+        show the search itself.</li>
+    </ul>
+    <p class="meta">These rules were checked against rsmod's OSRS route finder (RouteFinding.kt, ReachStrategy.kt) and
+      cross-tested against an independent bit-flag port of the client's BFS. The model covers blocked tiles and
+      tile-edge walls. Diagonal wall pieces and blocking ground decorations aren't modelled.</p>
+  </div>
+</div>
+
+<script src="engine.js"></script>
+<script src="scenarios.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
