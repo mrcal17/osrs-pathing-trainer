@@ -285,6 +285,19 @@ test('forward rule: first direction (W,E,S,N,SW,SE,NW,NE) that stays shortest = 
   assert.ok(checked > 3000);
 });
 
+test('Normal never asks routes an empty map would give too', () => {
+  for (const mode of ['trace', 'step', 'tick']) {
+    for (const terrain of ['any', ...S.TERRAINS]) {
+      for (let seed = 100; seed < 140; seed++) {
+        const q = S.generate(mode, { level: 3, terrain, size: 16, run: true, seed });
+        assert.ok(q, `${mode}/${terrain}/${seed}`);
+        const open = E.findPath(new E.Grid(q.size, q.size), q.src, q.result.end, { altRoute: false }).tiles;
+        assert.notStrictEqual(fmt(open), fmt(q.result.tiles), `${mode}/${terrain}/${seed} is an open-ground route`);
+      }
+    }
+  }
+});
+
 test('Beginner and Easy levels stay small and short', () => {
   for (const level of [1, 2]) {
     const L = S.LEVELS[level];

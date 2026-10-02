@@ -146,12 +146,14 @@
     return a.length === b.length && a.every((t, i) => t.x === b[i].x && t.y === b[i].y);
   }
 
-  // Would an empty map give the same route? Those only teach the open-ground rule, so ration them.
+  // Would an empty map give the same route? Then the obstacles play no part in it.
   function openGroundRoute(g, src, res) {
     return samePath(E.findPath(new E.Grid(g.w, g.h), src, res.end, { altRoute: false }).tiles, res.tiles);
   }
 
-  function walkQuestion(rng, g, minLen, maxLen, openShare, strict) {
+  // rejectOpen: never accept a route an empty map would give too (a straight run plus a diagonal
+  // bend with nothing in the way). Normal uses it; Beginner and Easy want exactly those routes.
+  function walkQuestion(rng, g, minLen, maxLen, rejectOpen) {
     const src = freeTile(g, rng);
     if (!src) return null;
     const dst = freeTile(g, rng, (x, y) => x !== src.x || y !== src.y);
@@ -161,17 +163,17 @@
     if (!res.reached || res.truncated) return null;
     const len = res.tiles.length - 1;
     if (len < minLen || len > maxLen) return null;
-    if (strict && openGroundRoute(g, src, res) && !rng.chance(openShare)) return null;
+    if (rejectOpen && openGroundRoute(g, src, res)) return null;
     return { grid: g, src, target, result: res };
   }
 
   function genTrace(rng, g, opts, strict, L) {
-    return walkQuestion(rng, g, L.trace[0], L.trace[1], 0.25, strict && L.filter);
+    return walkQuestion(rng, g, L.trace[0], L.trace[1], L.filter);
   }
 
   // Step-by-step drill: a walk whose route has real ties (more than one shortest-route step).
   function genStep(rng, g, opts, strict, L) {
-    const q = walkQuestion(rng, g, Math.max(3, L.trace[0]), L.trace[1], 1, false);
+    const q = walkQuestion(rng, g, Math.max(3, L.trace[0]), L.trace[1], L.filter);
     if (!q) return null;
     const tiles = q.result.tiles, end = tiles[tiles.length - 1];
     q.toDist = E.distTo(g, end.x, end.y);
@@ -182,7 +184,7 @@
   }
 
   function genTick(rng, g, opts, strict, L) {
-    const q = walkQuestion(rng, g, L.tick[0], L.tick[1], 0.35, strict && L.filter);
+    const q = walkQuestion(rng, g, L.tick[0], L.tick[1], L.filter);
     if (!q) return null;
     const stops = E.tickStops(q.result.tiles, !!opts.run);
     if (stops.length < 2) return null;
