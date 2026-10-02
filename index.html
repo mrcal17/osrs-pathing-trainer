@@ -68,11 +68,25 @@
       <div id="sbInfo"></div>
     </section>
 
+    <section class="card hidden" id="explorePanel">
+      <h2>Explore</h2>
+      <p>Click anywhere to run there, or click an NPC to walk up to melee range. Movement happens on 0.6s game ticks.
+        Your click is picked up on the next tick, then you cover 2 tiles a tick running, or 1 walking (<kbd>R</kbd>
+        toggles).</p>
+      <p class="hint">The cyan outline is your true tile, where the server has you. The white dot catches up over the
+        tick, like the game client does. A new click mid-run re-paths from your true tile, not from where the dot is drawn.</p>
+      <div class="row">
+        <button data-act="exNew">New map</button>
+        <label class="check"><input type="checkbox" id="exPath" checked> Show route</label>
+      </div>
+      <p id="exInfo" class="meta"></p>
+    </section>
+
     <section class="card small" id="hover">&nbsp;</section>
     <section class="card" id="statsCard"></section>
 
     <footer class="keys">
-      <kbd>1</kbd>–<kbd>8</kbd> modes · <kbd>Enter</kbd> submit/next · <kbd>Backspace</kbd> undo · <kbd>N</kbd> skip ·
+      <kbd>1</kbd>–<kbd>9</kbd> modes · <kbd>Enter</kbd> submit/next · <kbd>Backspace</kbd> undo · <kbd>N</kbd> skip ·
       <kbd>A</kbd> replay · <kbd>O</kbd> overlay · <kbd>R</kbd> run · <kbd>?</kbd> rules
     </footer>
   </aside>
@@ -127,6 +141,7 @@
       <li><b>Misses</b>: replays questions you got wrong. Get one right and it drops off the list.</li>
       <li><b>Sandbox</b>: build your own maps and click around. The <i>Steps</i> and <i>Search order</i> overlays
         show the search itself.</li>
+      <li><b>Explore</b>: free roam. Click around and the character runs on real 0.6s ticks, routing from its true tile.</li>
     </ul>
     <p class="meta">These rules were checked against rsmod's OSRS route finder (RouteFinding.kt, ReachStrategy.kt) and
       cross-tested against an independent bit-flag port of the client's BFS. The model covers blocked tiles and

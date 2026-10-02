@@ -14,7 +14,7 @@ def tile_xy(page, x, y):
     return page.evaluate(
         """([x, y]) => {
             const st = window.__trainer.st, r = document.getElementById('cv').getBoundingClientRect();
-            const g = st.mode === 'sandbox' ? st.sb.grid : st.q.grid;
+            const g = st.mode === 'sandbox' ? st.sb.grid : st.mode === 'explore' ? st.ex.grid : st.q.grid;
             return [r.left + (x + 0.5) * st.ts, r.top + (g.h - 0.5 - y) * st.ts];
         }""",
         [x, y],
@@ -135,6 +135,40 @@ with sync_playwright() as p:
         failures.append(f"sandbox melee: {sb}")
     page.keyboard.press("o")
     page.screenshot(path=str(SHOTS / "sandbox_melee.png"))
+
+    # Explore: real ticks, 2 tiles per tick running, arrival at the engine's end tile, mid-run re-route.
+    page.keyboard.press("9")
+    page.wait_for_timeout(200)
+    ex = "window.__trainer.st.ex"
+    far = page.evaluate(f"""(() => {{ const ex = {ex}, g = ex.grid, E = window.PathEngine;
+        let best = null;
+        for (let y = 0; y < g.h; y++) for (let x = 0; x < g.w; x++) {{
+          if (g.isBlocked(x, y) || ex.npcs.some((n) => x >= n.x && x < n.x + n.w && y >= n.y && y < n.y + n.h)) continue;
+          const r = E.findPath(g, ex.pos, {{ x, y }}, {{ altRoute: false }});
+          if (r.reached && !r.truncated && (!best || r.tiles.length > best.n)) best = {{ x, y, n: r.tiles.length, end: r.end }};
+        }}
+        return best; }})()""")
+    click_tile(page, far["x"], far["y"])
+    page.wait_for_timeout(1500)  # click lands on the next tick, then at least one more tick of movement
+    page.screenshot(path=str(SHOTS / "explore_running.png"))
+    seg = page.evaluate(f"{ex}.seg")
+    if not (seg and len(seg) == 3):
+        failures.append(f"explore: expected a 2-tile run segment, got {seg}")
+    steps = far["n"] - 1
+    page.wait_for_timeout(600 * ((steps + 1) // 2) + 800)
+    pos = page.evaluate(f"{ex}.pos")
+    if pos != {"x": far["end"]["x"], "y": far["end"]["y"]}:
+        failures.append(f"explore: ended at {pos}, expected {far['end']}")
+    # Re-click mid-run: the new route must start from the true tile at the tick it is processed.
+    page.evaluate(f"(() => {{ const ex = {ex}; ex.probe = []; const orig = window.PathEngine.findPath; window.PathEngine.findPath = (g, s, t, o) => {{ ex.probe.push({{ x: s.x, y: s.y }}); return orig(g, s, t, o); }}; }})()")
+    start = page.evaluate(f"{ex}.pos")
+    click_tile(page, 0, 0)
+    page.wait_for_timeout(1300)
+    click_tile(page, 23, 23)
+    page.wait_for_timeout(700)
+    probe = page.evaluate(f"{ex}.probe")
+    if len(probe) != 2 or probe[0] != start:
+        failures.append(f"explore re-route sources: {probe}, start {start}")
 
     page.keyboard.press("?")
     page.screenshot(path=str(SHOTS / "rules.png"))

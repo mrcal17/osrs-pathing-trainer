@@ -14,6 +14,7 @@
     { id: 'mixed', label: 'Mixed' },
     { id: 'misses', label: 'Misses' },
     { id: 'sandbox', label: 'Sandbox' },
+    { id: 'explore', label: 'Explore' },
   ];
   const QUIZ = ['trace', 'step', 'tick', 'unreach', 'melee'];
   const NAME = { trace: 'Trace', step: 'Tie-breaks', tick: 'Tick', unreach: 'Unreachable', melee: 'Melee', all: 'All' };
@@ -51,6 +52,8 @@
     misses: Array.isArray(saved.misses) ? saved.misses : [],
     q: null, phase: 'ask', clicks: [], pick: null, verdict: null, stepIdx: 0, stepLog: [],
     hover: null, anim: null, raf: 0, ts: 32, mouseDown: false,
+    ex: { grid: null, pos: null, npcs: [], route: [], pending: null, seg: null, dest: null, click: null,
+      tick: 0, tickAt: 0, timer: 0, raf: 0, showPath: true, last: null },
     sb: { grid: null, src: null, npc: null, goal: null, res: null, search: null, tool: 'walk', npcSize: 2, paint: null },
   };
   if (saved.sandbox) {
@@ -423,11 +426,15 @@
 
   function render() {
     renderNav();
-    const sandbox = st.mode === 'sandbox';
+    const sandbox = st.mode === 'sandbox', explore = st.mode === 'explore';
     $('sandboxPanel').classList.toggle('hidden', !sandbox);
-    $('promptCard').classList.toggle('hidden', sandbox);
-    $('statsCard').classList.toggle('hidden', sandbox);
-    if (sandbox) {
+    $('explorePanel').classList.toggle('hidden', !explore);
+    $('promptCard').classList.toggle('hidden', sandbox || explore);
+    $('statsCard').classList.toggle('hidden', sandbox || explore);
+    if (explore) {
+      $('resultCard').classList.add('hidden');
+      renderExploreInfo();
+    } else if (sandbox) {
       $('resultCard').classList.add('hidden');
       renderSandboxInfo();
     } else {
@@ -439,13 +446,13 @@
       else rc.classList.add('hidden');
       $('statsCard').innerHTML = statsHTML();
     }
-    const simple = !sandbox && st.level < 3;
+    const simple = !sandbox && !explore && st.level < 3;
     for (const id of ['terrain', 'size']) {
-      $(id).disabled = simple;
+      $(id).disabled = simple || (explore && id === 'size');
       $(id).title = simple ? 'Beginner and Easy use their own small maps. Switch Level to Normal to choose.' : '';
     }
     $('overlay').value = st.overlay;
-    $('overlay').disabled = !sandbox && st.phase !== 'done';
+    $('overlay').disabled = explore || (!sandbox && st.phase !== 'done');
     $('overlay').title = $('overlay').disabled ? 'Overlays unlock after you answer' : '';
     layout();
     draw();
@@ -583,21 +590,182 @@
     renderNav();
   }
 
+  // ---- explore: free roam on game ticks --------------------------------------------------------
+  // Clicks are picked up on the next tick and routed from the true tile (where the server has you),
+  // then you move 2 route tiles per tick running, 1 walking. The drawn avatar catches up over the
+  // tick, like the game client.
+
+  const EXPLORE_SIZE = 24;
+
+  function newExploreMap() {
+    const ex = st.ex, rng = S.makeRng((Math.random() * 4294967296) >>> 0);
+    const style = st.terrain === 'any' ? rng.pick(S.TERRAINS) : st.terrain;
+    ex.grid = S.genTerrain(rng, EXPLORE_SIZE, style);
+    ex.pos = freeNear(ex.grid, EXPLORE_SIZE >> 1, EXPLORE_SIZE >> 1);
+    ex.npcs = [];
+    for (let tries = 0; ex.npcs.length < 3 && tries < 300; tries++) {
+      const n = rng.pick([1, 2, 3]), x = rng.int(1, EXPLORE_SIZE - n - 1), y = rng.int(1, EXPLORE_SIZE - n - 1);
+      const r = { x, y, w: n, h: n, kind: 'npc' };
+      let ok = !inRect(ex.pos, r) && !ex.npcs.some((o) => x < o.x + o.w + 1 && o.x < x + n + 1 && y < o.y + o.h + 1 && o.y < y + n + 1);
+      for (let j = 0; j < n && ok; j++) for (let i = 0; i < n && ok; i++) if (ex.grid.isBlocked(x + i, y + j)) ok = false;
+      if (ok) ex.npcs.push(r);
+    }
+    Object.assign(ex, { route: [], pending: null, seg: null, dest: null, click: null, tick: 0, last: null });
+  }
+
+  function startExplore() {
+    const ex = st.ex;
+    if (!ex.grid) newExploreMap();
+    stopExplore();
+    ex.tickAt = performance.now();
+    ex.timer = setInterval(exploreTick, TICK_MS);
+    const loop = () => {
+      if (st.mode !== 'explore') return;
+      draw();
+      ex.raf = requestAnimationFrame(loop);
+    };
+    loop();
+  }
+
+  function stopExplore() {
+    clearInterval(st.ex.timer);
+    cancelAnimationFrame(st.ex.raf);
+    st.ex.timer = 0;
+  }
+
+  function exploreTick() {
+    const ex = st.ex;
+    ex.tick++;
+    ex.tickAt = performance.now();
+    if (ex.pending) {
+      const res = E.findPath(ex.grid, ex.pos, ex.pending);
+      ex.route = res.tiles.slice(1);
+      ex.dest = ex.route.length ? res.end : null;
+      ex.last = { steps: ex.route.length, alternative: res.alternative, npc: res.npc, reached: res.reached, truncated: res.truncated };
+      ex.pending = null;
+    }
+    const seg = [ex.pos];
+    for (let n = st.run ? 2 : 1; n > 0 && ex.route.length; n--) seg.push(ex.route.shift());
+    ex.seg = seg;
+    ex.pos = seg[seg.length - 1];
+    if (!ex.route.length) ex.dest = null;
+    renderExploreInfo();
+  }
+
+  function exploreClick(t) {
+    const ex = st.ex, tile = { x: t.x, y: t.y };
+    const npc = ex.npcs.find((n) => inRect(tile, n));
+    ex.pending = npc ? Object.assign({}, npc) : { x: t.x, y: t.y, w: 1, h: 1, kind: 'tile' };
+    ex.click = { x: t.x, y: t.y, red: !!npc, at: performance.now() };
+  }
+
+  function renderExploreInfo() {
+    const ex = st.ex, l = ex.last, per = st.run ? 2 : 1;
+    let s = `Tick ${ex.tick} · ${st.run ? 'running' : 'walking'}`;
+    if (ex.route.length) s += ` · ${plural(ex.route.length, 'step')} left (${plural(Math.ceil(ex.route.length / per), 'tick')})`;
+    else if (l) s += ' · arrived';
+    if (l) {
+      s += ` · last route ${plural(l.steps, 'step')}`;
+      if (l.npc) s += l.reached ? ', to melee range' : ', melee range unreachable so closest approach';
+      else if (l.alternative) s += ', unreachable so closest approach';
+      if (l.truncated) s += ', cut at 25 turns';
+    }
+    $('exInfo').textContent = s;
+  }
+
+  function drawCross(g, t, age, color) {
+    const ts = st.ts, x = cx(t.x), y = cy(t.y, g), a = ts * 0.3 * (1 - 0.45 * age);
+    ctx.save();
+    ctx.globalAlpha = 1 - 0.7 * age;
+    ctx.lineCap = 'round';
+    for (const [w, c] of [[Math.max(5, ts * 0.17), '#111'], [Math.max(3, ts * 0.1), color]]) {
+      ctx.strokeStyle = c;
+      ctx.lineWidth = w;
+      ctx.beginPath();
+      ctx.moveTo(x - a, y - a); ctx.lineTo(x + a, y + a);
+      ctx.moveTo(x + a, y - a); ctx.lineTo(x - a, y + a);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  function drawExplore(g) {
+    const ex = st.ex, ts = st.ts, now = performance.now();
+    drawRocks(g);
+    drawWalls(g);
+    ex.npcs.forEach((n) => drawNpc(g, n));
+    if (ex.showPath && ex.route.length) {
+      ctx.save();
+      ctx.setLineDash([5, 5]);
+      ctx.strokeStyle = 'rgba(94,224,138,0.7)';
+      ctx.lineWidth = Math.max(2, ts * 0.07);
+      ctx.lineJoin = 'round';
+      polyline(g, [ex.pos].concat(ex.route));
+      ctx.restore();
+    }
+    if (ex.dest) {
+      ctx.strokeStyle = 'rgba(255,255,255,0.75)';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(px(ex.dest.x) + 2, py(ex.dest.y, g) + 2, ts - 4, ts - 4);
+    }
+    if (ex.click) {
+      const age = (now - ex.click.at) / 450;
+      if (age < 1) drawCross(g, ex.click, age, ex.click.red ? C.npc : C.target);
+    }
+    // Avatar glides along this tick's tiles over the tick; the true tile is already at the end.
+    let p = ex.pos;
+    const seg = ex.seg, f = (now - ex.tickAt) / TICK_MS;
+    if (seg && seg.length > 1 && f < 1) {
+      const idx = f * (seg.length - 1), i0 = Math.floor(idx), fr = idx - i0;
+      const a = seg[i0], b = seg[Math.min(i0 + 1, seg.length - 1)];
+      p = { x: a.x + (b.x - a.x) * fr, y: a.y + (b.y - a.y) * fr };
+    }
+    ctx.strokeStyle = C.player;
+    ctx.lineWidth = 2;
+    ctx.strokeRect(px(ex.pos.x) + 1.5, py(ex.pos.y, g) + 1.5, ts - 3, ts - 3);
+    circle(cx(p.x), cy(p.y, g), ts * 0.27);
+    ctx.fillStyle = C.avatar;
+    ctx.fill();
+    ctx.strokeStyle = '#111';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    // Tick pulse in the corner: it flashes as each 0.6s tick lands.
+    const label = `tick ${ex.tick}`;
+    ctx.font = '600 12px system-ui, sans-serif';
+    const w = ctx.measureText(label).width + 26;
+    ctx.fillStyle = 'rgba(0,0,0,0.7)';
+    ctx.fillRect(g.w * ts - w - 6, 6, w, 20);
+    circle(g.w * ts - w + 4, 16, 4);
+    ctx.fillStyle = f < 0.25 ? C.target : '#555';
+    ctx.fill();
+    ctx.fillStyle = '#fff';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(label, g.w * ts - w + 12, 16);
+    if (st.hover && g.inBounds(st.hover.x, st.hover.y)) {
+      ctx.strokeStyle = 'rgba(255,255,255,0.55)';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(px(st.hover.x) + 1, py(st.hover.y, g) + 1, ts - 2, ts - 2);
+    }
+  }
+
   // ---- settings and modes -----------------------------------------------------------------
 
   function setMode(id) {
     if (st.mode === id && id !== 'misses') return;
     stopAnim();
+    stopExplore();
     st.mode = id;
     st.hover = null;
     persist();
-    if (id === 'sandbox') { initSandbox(); render(); } else nextQuestion();
+    if (id === 'sandbox') { initSandbox(); render(); } else if (id === 'explore') { startExplore(); render(); } else nextQuestion();
   }
 
   function setRun(v) {
     st.run = v;
     $('run').checked = v;
     persist();
+    if (st.mode === 'explore') return render();
     if (st.mode === 'sandbox') {
       if (st.sb.res) startAnim(st.sb.res.tiles, v);
       return render();
@@ -612,6 +780,7 @@
   }
 
   function cycleOverlay() {
+    if (st.mode === 'explore') return;
     if (st.mode !== 'sandbox' && st.phase !== 'done') return toast('Overlays unlock after you answer');
     st.overlay = OVERLAYS[(OVERLAYS.indexOf(st.overlay) + 1) % OVERLAYS.length];
     persist();
@@ -619,6 +788,7 @@
   }
 
   function replay() {
+    if (st.mode === 'explore') return;
     if (st.mode === 'sandbox') { if (st.sb.res) startAnim(st.sb.res.tiles, st.run); return; }
     if (st.q && st.phase === 'done') startAnim(st.q.result.tiles, st.q.run);
   }
@@ -659,6 +829,10 @@
   // ---- rendering --------------------------------------------------------------------------
 
   function view() {
+    if (st.mode === 'explore') {
+      const ex = st.ex;
+      return ex.grid ? { g: ex.grid, src: ex.pos, overlay: 'none', search: null } : null;
+    }
     if (st.mode === 'sandbox') {
       const sb = st.sb;
       if (!sb.grid) return null;
@@ -729,6 +903,7 @@
     for (let x = 1; x < g.w; x++) { ctx.moveTo(x * ts + 0.5, 0); ctx.lineTo(x * ts + 0.5, g.h * ts); }
     for (let y = 1; y < g.h; y++) { ctx.moveTo(0, y * ts + 0.5); ctx.lineTo(g.w * ts, y * ts + 0.5); }
     ctx.stroke();
+    if (st.mode === 'explore') return drawExplore(g);
 
     if (v.overlay !== 'none' && v.search) drawNumbers(g, v.search, v.overlay);
     if (v.altWindow) drawAltWindow(g, v.altWindow);
@@ -968,7 +1143,8 @@
     if (e.button === 2) return undo();
     if (e.button !== 0) return;
     st.mouseDown = true;
-    if (st.mode === 'sandbox') sandboxDown(t);
+    if (st.mode === 'explore') exploreClick(t);
+    else if (st.mode === 'sandbox') sandboxDown(t);
     else quizClick({ x: t.x, y: t.y });
   });
   window.addEventListener('pointerup', () => {
@@ -1006,6 +1182,7 @@
         return;
       case 'sbRandom': newSandboxMap(true); return render();
       case 'sbClear': newSandboxMap(false); return render();
+      case 'exNew': newExploreMap(); return render();
     }
   });
   $('rules').addEventListener('click', (e) => {
@@ -1018,22 +1195,23 @@
     st.level = +e.target.value;
     e.target.blur();
     persist();
-    if (st.mode !== 'sandbox' && st.mode !== 'misses') nextQuestion(); else render();
+    if (st.mode !== 'sandbox' && st.mode !== 'misses' && st.mode !== 'explore') nextQuestion(); else render();
   });
   $('terrain').addEventListener('change', (e) => {
     st.terrain = e.target.value;
     e.target.blur();
     persist();
-    if (st.mode !== 'sandbox' && st.mode !== 'misses') nextQuestion();
+    if (st.mode === 'explore') { newExploreMap(); render(); } else if (st.mode !== 'sandbox' && st.mode !== 'misses') nextQuestion();
   });
   $('size').addEventListener('change', (e) => {
     st.size = +e.target.value;
     e.target.blur();
     persist();
-    if (st.mode === 'sandbox') { newSandboxMap(true); render(); } else if (st.mode !== 'misses') nextQuestion();
+    if (st.mode === 'sandbox') { newSandboxMap(true); render(); } else if (st.mode !== 'misses' && st.mode !== 'explore') nextQuestion();
   });
   $('run').addEventListener('change', (e) => { e.target.blur(); setRun(e.target.checked); });
   $('overlay').addEventListener('change', (e) => { st.overlay = e.target.value; e.target.blur(); persist(); render(); });
+  $('exPath').addEventListener('change', (e) => { st.ex.showPath = e.target.checked; e.target.blur(); });
   $('npcSize').addEventListener('change', (e) => { st.sb.npcSize = +e.target.value; e.target.blur(); });
 
   document.addEventListener('keydown', (e) => {
@@ -1042,10 +1220,11 @@
     const k = e.key, low = k.toLowerCase();
     if (!$('rules').classList.contains('hidden')) { if (k === 'Escape' || k === '?') showRules(false); return; }
     if (k === '?') return showRules(true);
-    if (/^[1-8]$/.test(k)) return setMode(MODES[+k - 1].id);
+    if (/^[1-9]$/.test(k)) return setMode(MODES[+k - 1].id);
     if (low === 'r') return setRun(!st.run);
     if (low === 'o') return cycleOverlay();
     if (low === 'a') return replay();
+    if (st.mode === 'explore') return;
     if (st.mode === 'sandbox') {
       const tools = { w: 'walk', b: 'rock', l: 'wall', p: 'player', n: 'npc' };
       if (tools[low]) setTool(tools[low]);
@@ -1070,7 +1249,7 @@
   $('size').value = String(st.size);
   $('run').checked = st.run;
   $('npcSize').value = String(st.sb.npcSize);
-  if (st.mode === 'sandbox') { initSandbox(); render(); } else nextQuestion();
+  if (st.mode === 'sandbox') { initSandbox(); render(); } else if (st.mode === 'explore') { startExplore(); render(); } else nextQuestion();
 
   // Exposed for automated smoke tests.
   window.__trainer = { st, nextQuestion, setMode, quizClick, finish };
