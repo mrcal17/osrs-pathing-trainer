@@ -298,6 +298,31 @@ test('Normal never asks routes an empty map would give too', () => {
   }
 });
 
+test('dodge waves: solvable, obvious click is a trap, outcomes match findPath routes', () => {
+  let made = 0, tries = 0;
+  for (const strict of [false, true]) {
+    for (const run of [true, false]) {
+      for (let seed = 1; seed <= 25; seed++) {
+        tries++;
+        const rng = S.makeRng(seed * 7 + (strict ? 1 : 0) + (run ? 2 : 0));
+        const g = S.genTerrain(rng, 16, 'light');
+        let pos = null;
+        for (let y = 5; y < 11 && !pos; y++) for (let x = 5; x < 11 && !pos; x++) if (!g.isBlocked(x, y)) pos = T(x, y);
+        const w = S.dodgeWave(rng, g, pos, { run, strict });
+        if (!w) continue;
+        made++;
+        const m = S.splatIndex(g, w.splats);
+        const outcome = (e) => S.dodgeHit(g, E.findPath(g, pos, { x: e.x, y: e.y }).tiles, m, run, strict, w.horizon, 1);
+        for (const e of w.winners) assert.strictEqual(outcome(e), null, 'winner survives');
+        assert.ok(outcome(w.naive), 'obvious click gets hit');
+        assert.ok(!w.splats.some((s) => s.x === w.naive.x && s.y === w.naive.y), 'obvious click looks calm');
+        assert.ok(Math.min(...w.winners.map((e) => e.dist)) >= 3);
+      }
+    }
+  }
+  assert.ok(made >= tries * 0.8, `only ${made}/${tries} waves built`);
+});
+
 test('Beginner and Easy levels stay small and short', () => {
   for (const level of [1, 2]) {
     const L = S.LEVELS[level];

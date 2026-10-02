@@ -174,6 +174,21 @@ with sync_playwright() as p:
     page.keyboard.press("0")
     page.wait_for_timeout(300)
     dg = "window.__trainer.st.dg"
+    # Puzzle style (default): a gold tile survives, the obvious calm tile is a trap.
+    for pick, want in (("winners[0]", True), ("naive", False)):
+        target = page.evaluate(f"{dg}.puzzle.wave.{pick}")
+        click_tile(page, target["x"], target["y"])
+        page.wait_for_function(f"{dg}.puzzle.done", timeout=15000)
+        ok = page.evaluate(f"{dg}.puzzle.ok")
+        if ok != want:
+            failures.append(f"dodge puzzle: clicking {pick} gave ok={ok}")
+        if not want:
+            page.screenshot(path=str(SHOTS / "dodge_puzzle_review.png"))
+        page.keyboard.press("Enter")
+        page.wait_for_timeout(200)
+    page.screenshot(path=str(SHOTS / "dodge_puzzle.png"))
+    page.select_option("#dgStyle", "survival")
+    page.wait_for_timeout(200)
     lane = page.evaluate(f"""(() => {{ const dg = {dg}, g = dg.grid;
         for (let y = 0; y < g.h; y++) for (let x = 0; x + 2 < g.w; x++)
           if (!g.isBlocked(x, y) && !g.isBlocked(x + 1, y) && !g.isBlocked(x + 2, y) && !g.hasWallE(x, y) && !g.hasWallE(x + 1, y)) return {{ x, y }};

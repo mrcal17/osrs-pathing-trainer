@@ -251,6 +251,101 @@
     return { grid: g, src, target: npc, result: res };
   }
 
+  // ---- dodge waves --------------------------------------------------------------------------
+  // A wave is a splat schedule { x, y, kind, land, until } in ticks after it appears. A pool hits on
+  // ticks land..until-1. The click made when the wave appears is processed on tick `clickTick`.
+
+  function splatIndex(grid, splats) {
+    const m = new Map();
+    for (const s of splats) {
+      const i = grid.idx(s.x, s.y);
+      if (!m.has(i)) m.set(i, []);
+      m.get(i).push(s);
+    }
+    return m;
+  }
+  const activeAt = (grid, m, x, y, k) => (m.get(grid.idx(x, y)) || []).some((s) => s.land <= k && k < s.until);
+
+  // First hit (tick and tile) for a route (start tile first) that starts moving on clickTick, or null.
+  // Normal rule: only the tile you end each tick on counts. Strict: every tile stepped on that tick.
+  function dodgeHit(grid, tiles, m, run, strict, horizon, clickTick) {
+    const step = run ? 2 : 1, last = tiles.length - 1;
+    let i = 0;
+    for (let k = 1; k <= horizon; k++) {
+      const j = k < clickTick ? 0 : Math.min(i + step, last);
+      const checked = strict && j > i ? tiles.slice(i + 1, j + 1) : [tiles[j]];
+      for (const c of checked) if (activeAt(grid, m, c.x, c.y, k)) return { tick: k, x: c.x, y: c.y };
+      i = j;
+    }
+    return null;
+  }
+
+  // Every tile within B of you eventually gets a splat: about half are pools from tick 1, the rest are
+  // gaps that close a tick or two after you could reach them, and your own area takes a drop on tick 2.
+  // So you have to cross the band, and only tick stops on open gaps survive. One crossing is planted:
+  // the game's route to a tile just outside the band gets open gaps on every tick stop (and, running,
+  // often pools on the tiles it passes mid-tick). The solver then checks every click; a wave is kept
+  // only if the nearest calm tile (no splat ever) is a trap and most calm tiles near the answer are too.
+  // opts: { run, strict, delay (extra warning ticks), clickTick (tick the click is processed on) }
+  function dodgeWave(rng, grid, pos, opts) {
+    const run = opts.run !== false, strict = !!opts.strict, D = opts.delay || 0, clickTick = opts.clickTick || 1;
+    const step = run ? 2 : 1;
+    const s0 = E.search(grid, pos.x, pos.y, null);
+    const cheb = (x, y) => Math.max(Math.abs(x - pos.x), Math.abs(y - pos.y));
+    const tickOf = (j) => clickTick - 1 + Math.ceil(j / step); // tick on which route index j is reached
+    const bump = (k) => { if (opts.stats) opts.stats[k] = (opts.stats[k] || 0) + 1; };
+    for (let attempt = 0; attempt < 300; attempt++) {
+      const B = rng.int(3, 5), dens = 0.6 + rng.next() * 0.15;
+      const H = tickOf(B + 3) + 2, until = H + D + 1;
+      const outside = [];
+      for (let i = 0; i < grid.w * grid.h; i++) {
+        const x = i % grid.w, y = (i - x) / grid.w, c = cheb(x, y), d = s0.dist[i];
+        if (d > 0 && (c === B + 1 || c === B + 2) && d <= B + 3) outside.push(i);
+      }
+      if (!outside.length) { bump('noOutside'); continue; }
+      const route = E.backtrack(grid, s0, rng.pick(outside));
+      const onRoute = new Map();
+      route.forEach((r, j) => { if (j) onRoute.set(grid.idx(r.x, r.y), j); });
+      const splats = [];
+      const add = (x, y, land, kind) => splats.push({ x, y, kind, land: Math.min(land, H) + D, until });
+      for (let y = 0; y < grid.h; y++) {
+        for (let x = 0; x < grid.w; x++) {
+          const c = cheb(x, y);
+          if (c > B || grid.isBlocked(x, y)) continue;
+          const j = onRoute.get(grid.idx(x, y));
+          if (c <= 1) add(x, y, j ? Math.max(2, tickOf(j) + 1) : 2, 'drop');
+          else if (j !== undefined) {
+            const stop = strict || !run || j % step === 0 || j === route.length - 1;
+            if (!stop && rng.chance(0.65)) add(x, y, 1, 'field');
+            else add(x, y, tickOf(j) + rng.int(1, 2), 'drop');
+          } else if (rng.chance(dens)) add(x, y, 1, 'field');
+          else add(x, y, tickOf(c) + 1, 'drop');
+        }
+      }
+      const m = splatIndex(grid, splats), ends = [];
+      for (let i = 0; i < grid.w * grid.h; i++) {
+        const d = s0.dist[i];
+        if (d <= 0 || d > step * (H - clickTick + 1)) continue;
+        const x = i % grid.w, y = (i - x) / grid.w;
+        const hit = dodgeHit(grid, E.backtrack(grid, s0, i), m, run, strict, H + D, clickTick);
+        ends.push({ x, y, dist: d, win: !hit, calm: !m.has(i), hit });
+      }
+      const winners = ends.filter((e) => e.win);
+      if (!winners.length) { bump('noWinner'); continue; }
+      const calm = ends.filter((e) => e.calm).sort((a, b) => a.dist - b.dist);
+      const naive = calm[0];
+      if (!naive || naive.win) { bump(naive ? 'naiveWins' : 'noCalm'); continue; }
+      const near = Math.min(...winners.map((w) => w.dist));
+      if (near < 3) { bump('tooClose'); continue; }
+      const calmNear = calm.filter((e) => e.dist <= near + 1);
+      if (calmNear.filter((e) => !e.win).length < calmNear.length / 2) { bump('fewTraps'); continue; }
+      const ring = calm.filter((e) => cheb(e.x, e.y) <= B + 2);
+      if (ring.filter((e) => e.win).length > Math.max(2, ring.length / 4)) { bump('tooManyWinners'); continue; }
+      return { splats, horizon: H + D, winners, naive, calmCount: calm.length };
+    }
+    return null;
+  }
+
   const GENERATORS = { trace: genTrace, step: genStep, tick: genTick, unreach: genUnreach, melee: genMelee };
 
   // opts: { level: 1-3 (default 3), terrain: 'any' | one of TERRAINS, size, run, seed }.
@@ -272,5 +367,5 @@
     return null;
   }
 
-  return { TERRAINS, LEVELS, makeRng, genTerrain, generate };
+  return { TERRAINS, LEVELS, makeRng, genTerrain, generate, dodgeWave, dodgeHit, splatIndex };
 });

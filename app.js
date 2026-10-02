@@ -58,7 +58,9 @@
     dg: { grid: null, pos: null, npcs: [], route: [], pending: null, seg: null, dest: null, click: null,
       tick: 0, tickAt: 0, timer: 0, raf: 0, showPath: true, last: null, hazards: true,
       hp: 99, hits: 0, splats: [], wave: 0, nextWave: 3, dead: false, paused: false, hitFx: null,
-      showStops: true, strict: false, best: saved.dodgeBest || 0, rng: null },
+      showStops: true, strict: false, best: saved.dodgeBest || 0, rng: null,
+      style: saved.dodgeStyle === 'survival' ? 'survival' : 'puzzle', preview: false, puzzle: null, trail: [],
+      pz: saved.dodgePuzzle || { n: 0, ok: 0, streak: 0, best: 0 } },
     sb: { grid: null, src: null, npc: null, goal: null, res: null, search: null, tool: 'walk', npcSize: 2, paint: null },
   };
   if (saved.sandbox) {
@@ -73,7 +75,7 @@
     const sb = st.sb;
     try {
       localStorage.setItem(STORE, JSON.stringify({
-        mode: st.mode, dodgeBest: st.dg.best, level: st.level, terrain: st.terrain, size: st.size, run: st.run, overlay: st.overlay,
+        mode: st.mode, dodgeBest: st.dg.best, dodgeStyle: st.dg.style, dodgePuzzle: st.dg.pz, level: st.level, terrain: st.terrain, size: st.size, run: st.run, overlay: st.overlay,
         stats: st.stats, misses: st.misses,
         sandbox: sb.grid ? { grid: sb.grid.toJSON(), src: sb.src, npc: sb.npc } : null,
       }));
@@ -668,6 +670,12 @@
   function exploreClick(t) {
     const ex = roam(), tile = { x: t.x, y: t.y };
     if (ex.dead) return;
+    if (ex.hazards && ex.style === 'puzzle') {
+      const pz = ex.puzzle;
+      if (!pz || pz.clicked || pz.done) return;
+      pz.clicked = tile;
+      ex.paused = false;
+    }
     const npc = ex.npcs.find((n) => inRect(tile, n));
     ex.pending = npc ? Object.assign({}, npc) : { x: t.x, y: t.y, w: 1, h: 1, kind: 'tile' };
     ex.click = { x: t.x, y: t.y, red: !!npc, at: performance.now() };
@@ -748,7 +756,8 @@
     ctx.stroke();
     if (ex.hazards) drawHitsplat(g, ex, p, now);
     // Tick pulse in the corner: it flashes as each 0.6s tick lands.
-    const label = ex.paused ? `tick ${ex.tick} · paused` : `tick ${ex.tick}`;
+    const pzl = ex.hazards && ex.puzzle;
+    const label = pzl && !pzl.clicked ? 'planning: clock stopped' : pzl ? `tick ${ex.tick - pzl.wave.t0}` : ex.paused ? `tick ${ex.tick} · paused` : `tick ${ex.tick}`;
     ctx.font = '600 12px system-ui, sans-serif';
     const w = ctx.measureText(label).width + 26;
     ctx.fillStyle = 'rgba(0,0,0,0.7)';
@@ -768,35 +777,68 @@
   }
 
   // ---- dodge: floor hazards on top of the roam tick loop -------------------------------------
-  // Splats are telegraphed, land WARN ticks later and stay as pools for POOL_TICKS ticks. A pool
-  // hits you if a tick ends with your true tile on it (strict mode: any tile stepped on that tick).
-  // The pathfinder ignores splats, as the game's does.
+  // Waves come from Scenarios.dodgeWave: a band of pools and closing gaps around you that you have to
+  // cross, checked so some click survives while the nearest calm-looking tile is a trap. A pool hits
+  // you if a tick ends with your true tile on it (strict: any tile stepped on that tick). The
+  // pathfinder ignores splats, as the game's does. Puzzle style: the clock waits, you get one click.
+  // Survival style: the same waves in real time with 2 extra warning ticks.
 
-  const DODGE_SIZE = 16, POOL_TICKS = 3;
+  const DODGE_SIZE = 16;
+
+  function freshDodgeMap(dg) {
+    dg.rng = S.makeRng((Math.random() * 4294967296) >>> 0);
+    dg.grid = S.genTerrain(dg.rng, DODGE_SIZE, 'light');
+    dg.pos = freeNear(dg.grid, dg.rng.int(5, DODGE_SIZE - 6), dg.rng.int(5, DODGE_SIZE - 6));
+    Object.assign(dg, { npcs: [], route: [], pending: null, seg: null, dest: null, click: null, last: null, splats: [], trail: [], hitFx: null });
+  }
 
   function newDodge() {
-    const dg = st.dg, rng = S.makeRng((Math.random() * 4294967296) >>> 0);
-    dg.rng = rng;
-    dg.grid = S.genTerrain(rng, DODGE_SIZE, 'light');
-    dg.pos = freeNear(dg.grid, DODGE_SIZE >> 1, DODGE_SIZE >> 1);
-    Object.assign(dg, {
-      npcs: [], route: [], pending: null, seg: null, dest: null, click: null, tick: 0, last: null,
-      hp: 99, hits: 0, splats: [], wave: 0, nextWave: 3, dead: false, paused: false, hitFx: null,
-    });
+    const dg = st.dg;
+    freshDodgeMap(dg);
+    Object.assign(dg, { tick: 0, hp: 99, hits: 0, wave: 0, nextWave: 2, dead: false, paused: false, puzzle: null });
+    if (dg.style === 'puzzle') nextPuzzle();
+    else renderDodgeInfo();
+  }
+
+  // Lay a wave down relative to the current tick. delay = extra warning ticks; clickTick = the tick
+  // the solver assumes your click lands on.
+  function placeWave(dg, delay, clickTick) {
+    const w = S.dodgeWave(dg.rng, dg.grid, dg.pos, { run: st.run, strict: dg.strict, delay, clickTick });
+    if (!w) return null;
+    const t0 = dg.tick;
+    dg.splats = dg.splats.concat(w.splats.map((s) => ({ x: s.x, y: s.y, kind: s.kind, land: t0 + s.land, until: t0 + s.until })));
+    return Object.assign(w, { t0 });
+  }
+
+  function nextPuzzle() {
+    const dg = st.dg;
+    let w = null;
+    for (let tries = 0; !w && tries < 10; tries++) {
+      freshDodgeMap(dg);
+      w = placeWave(dg, 0, 1);
+    }
+    dg.puzzle = w ? { wave: w, clicked: null, done: false, first: null, ok: false } : null;
+    dg.paused = true; // the clock waits for your click
     renderDodgeInfo();
   }
 
   const poolAt = (dg, x, y, tick) => dg.splats.some((s) => s.x === x && s.y === y && s.land <= tick && tick < s.until);
 
   function dodgeTick(dg, seg) {
-    const t = dg.tick;
+    const t = dg.tick, pz = dg.puzzle;
     const checked = dg.strict && seg.length > 1 ? seg.slice(1) : [dg.pos];
-    let dmg = 0;
-    for (const c of checked) if (poolAt(dg, c.x, c.y, t)) dmg += dg.rng.int(8, 15);
+    let dmg = 0, at = null;
+    for (const c of checked) if (poolAt(dg, c.x, c.y, t)) { dmg += dg.rng.int(8, 15); at = at || c; }
     if (dmg) {
-      dg.hp = Math.max(0, dg.hp - dmg);
+      if (!pz) dg.hp = Math.max(0, dg.hp - dmg);
       dg.hits++;
       dg.hitFx = { at: performance.now(), dmg };
+    }
+    if (pz) {
+      dg.trail.push({ x: dg.pos.x, y: dg.pos.y, tick: t - pz.wave.t0, hit: !!dmg });
+      if (dmg && !pz.first) pz.first = { tick: t - pz.wave.t0, x: at.x, y: at.y };
+      if (t - pz.wave.t0 >= pz.wave.horizon) finishPuzzle(dg);
+      return;
     }
     dg.splats = dg.splats.filter((s) => s.until > t + 1);
     if (dg.hp <= 0) {
@@ -806,50 +848,74 @@
       if (t > dg.best) { dg.best = t; persist(); }
       return;
     }
-    if (t >= dg.nextWave) {
-      spawnWave(dg);
+    // A new wave once the last one has cleared and you've stopped moving (or waited long enough).
+    if (t >= dg.nextWave && (!dg.route.length || t >= dg.nextWave + 4)) {
+      const w = placeWave(dg, 2, 2);
       dg.wave++;
-      dg.nextWave = t + Math.max(3, 6 - Math.floor(dg.wave / 4));
+      dg.nextWave = t + (w ? w.horizon : 4) + 1;
     }
   }
 
-  function spawnWave(dg) {
-    const r = dg.rng, g = dg.grid, p = dg.pos;
-    const land = dg.tick + (dg.wave < 3 ? 3 : 2), until = land + POOL_TICKS;
-    const tiles = new Map();
-    const add = (x, y) => { if (g.inBounds(x, y) && !g.isBlocked(x, y)) tiles.set(g.idx(x, y), { x, y }); };
-    const kinds = ['onYou', 'scatter', 'line', 'ring'];
-    if (dg.wave >= 3) kinds.push('onYou+scatter', 'line+scatter');
-    const kind = r.pick(kinds);
-    if (kind.includes('onYou')) for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) add(p.x + dx, p.y + dy);
-    if (kind.includes('scatter')) {
-      for (let k = 6 + Math.min(14, dg.wave * 2); k > 0; k--) add(p.x + r.int(-6, 6), p.y + r.int(-6, 6));
-    }
-    if (kind.includes('line')) {
-      const horiz = r.chance(0.5), width = dg.wave >= 4 && r.chance(0.5) ? 2 : 1;
-      for (let i = 0; i < g.w; i++) for (let k = 0; k < width; k++) (horiz ? add(i, p.y + k) : add(p.x + k, i));
-    }
-    if (kind === 'ring') {
-      for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++) if (Math.max(Math.abs(dx), Math.abs(dy)) === 2) add(p.x + dx, p.y + dy);
-      add(p.x, p.y);
-    }
-    for (const v of tiles.values()) dg.splats.push({ x: v.x, y: v.y, land, until });
+  function finishPuzzle(dg) {
+    const pz = dg.puzzle, s = dg.pz;
+    pz.done = true;
+    pz.ok = !pz.first;
+    dg.paused = true;
+    s.n++;
+    if (pz.ok) { s.ok++; s.streak++; s.best = Math.max(s.best, s.streak); } else s.streak = 0;
+    persist();
+    renderDodgeInfo();
   }
 
   function renderDodgeInfo() {
-    const dg = st.dg, pct = Math.round((100 * dg.hp) / 99);
-    let h = `<div class="hpbar"><div style="width:${pct}%"></div><span>${dg.hp} / 99</span></div>`;
-    h += `<p class="meta">Tick ${dg.tick} · wave ${dg.wave} · ${plural(dg.hits, 'hit')} taken · best ${plural(dg.best, 'tick')}${dg.paused ? ' · <b>paused</b>' : ''}</p>`;
-    if (dg.dead) h += `<p class="verdict bad">You died on tick ${dg.tick} after ${plural(dg.wave, 'wave')}.</p><p class="hint">Press Enter or Restart to go again.</p>`;
+    const dg = st.dg, pz = dg.puzzle;
+    let h = '';
+    if (dg.style === 'puzzle') {
+      const s = dg.pz;
+      h += `<p class="meta">Solved ${s.ok}/${s.n} · streak ${s.streak} · best streak ${s.best}</p>`;
+      if (!pz) h += "<p>Couldn't build a puzzle on this map. Press Next.</p>";
+      else if (!pz.clicked) h += '<p><b>Plan it.</b> The clock is stopped and you get <b>one click</b>. Pick the tile to run to so that no tick ends with you on a pool.</p>';
+      else if (!pz.done) h += '<p>Running it…</p>';
+      else {
+        const w = pz.wave, naive = same(pz.clicked, w.naive);
+        h += pz.ok ? '<p class="verdict ok">✓ Clean run</p>' : `<p class="verdict bad">✗ Hit on tick ${pz.first.tick}</p>`;
+        if (!pz.ok) {
+          h += `<p>Tick ${pz.first.tick} ended with you on a pool (the red dot on your trail).</p>`;
+          if (naive) h += '<p>You picked the nearest tile no splat ever lands on. That was the trap: the route there stops on a pool on the way.</p>';
+        }
+        h += `<p>${plural(w.winners.length, 'tile')} would have worked (gold), out of ${w.calmCount} calm tiles in reach. The nearest calm tile is marked ✗.</p>`;
+        h += '<p class="hint">Press Enter or Next for another.</p>';
+      }
+    } else {
+      const pct = Math.round((100 * dg.hp) / 99);
+      h += `<div class="hpbar"><div style="width:${pct}%"></div><span>${dg.hp} / 99</span></div>`;
+      h += `<p class="meta">Tick ${dg.tick} · wave ${dg.wave} · ${plural(dg.hits, 'hit')} taken · best ${plural(dg.best, 'tick')}${dg.paused ? ' · <b>paused</b>' : ''}</p>`;
+      if (dg.dead) h += `<p class="verdict bad">You died on tick ${dg.tick} after ${plural(dg.wave, 'wave')}.</p><p class="hint">Press Enter or Restart to go again.</p>`;
+    }
     $('dgHud').innerHTML = h;
+    $('dgPause').classList.toggle('hidden', dg.style === 'puzzle');
     $('dgPause').textContent = dg.paused ? 'Resume' : 'Pause';
+    $('dgRestart').textContent = dg.style === 'puzzle' ? 'Next puzzle' : 'Restart';
+    $('dgStyle').value = dg.style;
   }
 
   function drawSplats(g, dg) {
     const ts = st.ts;
+    ctx.font = `700 ${Math.max(9, Math.round(ts * 0.3))}px system-ui, sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    // Reviewing a finished puzzle shows the board as it was when you planned it.
+    const pz = dg.puzzle, now = pz && pz.done ? pz.wave.t0 : dg.tick;
     for (const s of dg.splats) {
+      if (now >= s.until) continue;
       const x = cx(s.x), y = cy(s.y, g);
-      if (dg.tick < s.land) {
+      if (s.kind === 'field' || now >= s.land) {
+        ctx.fillStyle = 'rgba(70,190,40,0.6)';
+        circle(x, y, ts * 0.42); ctx.fill();
+        ctx.fillStyle = 'rgba(40,140,20,0.7)';
+        circle(x - ts * 0.12, y + ts * 0.08, ts * 0.16); ctx.fill();
+        circle(x + ts * 0.14, y - ts * 0.1, ts * 0.12); ctx.fill();
+      } else {
         circle(x, y, ts * 0.4);
         ctx.fillStyle = 'rgba(150,255,90,0.14)';
         ctx.fill();
@@ -860,33 +926,68 @@
         ctx.stroke();
         ctx.restore();
         ctx.fillStyle = 'rgba(200,255,170,0.95)';
-        ctx.font = `700 ${Math.max(9, Math.round(ts * 0.3))}px system-ui, sans-serif`;
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillText(String(s.land - dg.tick), x, y + 1);
-      } else {
-        ctx.fillStyle = 'rgba(70,190,40,0.6)';
-        circle(x, y, ts * 0.42); ctx.fill();
-        ctx.fillStyle = 'rgba(40,140,20,0.7)';
-        circle(x - ts * 0.12, y + ts * 0.08, ts * 0.16); ctx.fill();
-        circle(x + ts * 0.14, y - ts * 0.1, ts * 0.12); ctx.fill();
+        ctx.fillText(String(s.land - now), x, y + 1);
       }
     }
   }
 
-  // Where you'll stand at the end of each coming tick, red if a pool will be there then.
-  function drawTickStops(g, dg) {
-    if (!dg.route.length) return;
-    const ts = st.ts, stops = E.tickStops([dg.pos].concat(dg.route), st.run);
+  // Numbered dots for where you'll stand at the end of each coming tick; red = a pool will be there.
+  function drawStops(g, dg, from, tiles, startTick) {
+    const ts = st.ts, stops = E.tickStops([from].concat(tiles), st.run);
     ctx.font = `700 ${Math.max(9, Math.round(ts * 0.26))}px system-ui, sans-serif`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     for (const s of stops) {
-      const bad = poolAt(dg, s.x, s.y, dg.tick + s.tick);
+      const bad = poolAt(dg, s.x, s.y, startTick + s.tick);
       circle(cx(s.x), cy(s.y, g), ts * 0.2);
       ctx.fillStyle = bad ? C.bad : C.route;
       ctx.fill();
       ctx.fillStyle = bad ? '#fff' : '#0d1a10';
+      ctx.fillText(String(s.tick), cx(s.x), cy(s.y, g) + 1);
+    }
+  }
+
+  function drawTickStops(g, dg) {
+    const pz = dg.puzzle;
+    if (pz && !pz.clicked) {
+      if (dg.preview && st.hover && !dg.grid.isBlocked(st.hover.x, st.hover.y)) {
+        const r = E.findPath(dg.grid, dg.pos, { x: st.hover.x, y: st.hover.y });
+        ctx.save();
+        ctx.setLineDash([5, 5]);
+        ctx.strokeStyle = 'rgba(255,255,255,0.6)';
+        ctx.lineWidth = Math.max(2, st.ts * 0.06);
+        polyline(g, r.tiles);
+        ctx.restore();
+        drawStops(g, dg, dg.pos, r.tiles.slice(1), dg.tick);
+      }
+      return;
+    }
+    if (pz && pz.done) return drawPuzzleReview(g, dg);
+    if (dg.route.length) drawStops(g, dg, dg.pos, dg.route, dg.tick);
+  }
+
+  function drawPuzzleReview(g, dg) {
+    const ts = st.ts, pz = dg.puzzle;
+    ctx.fillStyle = '#ffd84a';
+    for (const w of pz.wave.winners) {
+      const x = cx(w.x), y = cy(w.y, g), r = ts * 0.13;
+      ctx.beginPath();
+      ctx.moveTo(x, y - r); ctx.lineTo(x + r, y); ctx.lineTo(x, y + r); ctx.lineTo(x - r, y);
+      ctx.closePath();
+      ctx.fill();
+    }
+    drawMarks(g, [{ x: pz.wave.naive.x, y: pz.wave.naive.y, label: '✗', color: C.bad }]);
+    ctx.font = `700 ${Math.max(9, Math.round(ts * 0.26))}px system-ui, sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    let prev = null;
+    for (const s of dg.trail) {
+      if (prev && same(prev, s)) continue;
+      prev = s;
+      circle(cx(s.x), cy(s.y, g), ts * 0.2);
+      ctx.fillStyle = s.hit ? C.bad : C.route;
+      ctx.fill();
+      ctx.fillStyle = s.hit ? '#fff' : '#0d1a10';
       ctx.fillText(String(s.tick), cx(s.x), cy(s.y, g) + 1);
     }
   }
@@ -907,7 +1008,7 @@
 
   function toggleDodgePause() {
     const dg = st.dg;
-    if (dg.dead) return;
+    if (dg.dead || dg.style === 'puzzle') return;
     dg.paused = !dg.paused;
     renderDodgeInfo();
   }
@@ -916,6 +1017,12 @@
     newDodge();
     startExplore();
     render();
+  }
+
+  // Run and strict change which clicks work, so rebuild a puzzle that hasn't been clicked yet.
+  function dodgeSettingChanged() {
+    const dg = st.dg;
+    if (st.mode === 'dodge' && dg.style === 'puzzle' && dg.puzzle && !dg.puzzle.clicked) nextPuzzle();
   }
 
   // ---- settings and modes -----------------------------------------------------------------
@@ -934,7 +1041,7 @@
     st.run = v;
     $('run').checked = v;
     persist();
-    if (isRoam()) return render();
+    if (isRoam()) { dodgeSettingChanged(); return render(); }
     if (st.mode === 'sandbox') {
       if (st.sb.res) startAnim(st.sb.res.tiles, v);
       return render();
@@ -1384,7 +1491,9 @@
   $('overlay').addEventListener('change', (e) => { st.overlay = e.target.value; e.target.blur(); persist(); render(); });
   $('exPath').addEventListener('change', (e) => { st.ex.showPath = e.target.checked; e.target.blur(); });
   $('dgStops').addEventListener('change', (e) => { st.dg.showStops = e.target.checked; e.target.blur(); });
-  $('dgStrict').addEventListener('change', (e) => { st.dg.strict = e.target.checked; e.target.blur(); });
+  $('dgStrict').addEventListener('change', (e) => { st.dg.strict = e.target.checked; e.target.blur(); dodgeSettingChanged(); });
+  $('dgPreview').addEventListener('change', (e) => { st.dg.preview = e.target.checked; e.target.blur(); });
+  $('dgStyle').addEventListener('change', (e) => { st.dg.style = e.target.value; e.target.blur(); persist(); restartDodge(); });
   $('npcSize').addEventListener('change', (e) => { st.sb.npcSize = +e.target.value; e.target.blur(); });
 
   document.addEventListener('keydown', (e) => {
@@ -1399,7 +1508,9 @@
     if (low === 'a') return replay();
     if (st.mode === 'dodge') {
       if (k === ' ' || low === 'p') { e.preventDefault(); toggleDodgePause(); }
-      else if (k === 'Enter' && st.dg.dead) restartDodge();
+      else if (k === 'Enter' && (st.dg.dead || (st.dg.puzzle && st.dg.puzzle.done))) {
+        if (st.dg.style === 'puzzle') { nextPuzzle(); render(); } else restartDodge();
+      }
       return;
     }
     if (st.mode === 'explore') return;

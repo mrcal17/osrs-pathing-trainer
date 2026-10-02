@@ -305,7 +305,7 @@
 
   return {
     DIRS, ALT_RANGE, ALT_MAX_DIST, MAX_TURNS, Grid,
-    dirName, search, findPath, closestApproach, meleeReach, meleeTileIssue, meleeCandidates,
+    dirName, search, backtrack, findPath, closestApproach, meleeReach, meleeTileIssue, meleeCandidates,
     rectDist2, turnPoints, tickStops, discoverers, diagnoseTrace, distTo, shortestSteps,
   };
 });
