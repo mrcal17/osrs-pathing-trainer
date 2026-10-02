@@ -82,11 +82,30 @@
       <p id="exInfo" class="meta"></p>
     </section>
 
+    <section class="card hidden" id="dodgePanel">
+      <h2>Dodge</h2>
+      <p>Poison splats are marked on the floor with a countdown, land when it runs out, then sit there as pools for
+        3 ticks. A pool hits you if a tick <b>ends</b> with you standing on it. Tiles you run over mid-tick are safe.</p>
+      <p class="hint">Splats don't block the pathfinder. The game will route you straight through them, so pick a
+        click whose end-of-tick tiles miss the pools. The numbered dots show where you'll stand each tick (red =
+        a pool will be there). <kbd>Space</kbd> pauses.</p>
+      <div id="dgHud"></div>
+      <div class="row">
+        <button data-act="dgRestart">Restart</button>
+        <button data-act="dgPause" id="dgPause">Pause</button>
+      </div>
+      <div class="row">
+        <label class="check"><input type="checkbox" id="dgStops" checked> Show tick stops</label>
+        <label class="check"><input type="checkbox" id="dgStrict"> Every tile stepped on counts</label>
+      </div>
+      <p class="meta">A general floor-hazard drill, not a copy of any one boss's patterns or timings.</p>
+    </section>
+
     <section class="card small" id="hover">&nbsp;</section>
     <section class="card" id="statsCard"></section>
 
     <footer class="keys">
-      <kbd>1</kbd>–<kbd>9</kbd> modes · <kbd>Enter</kbd> submit/next · <kbd>Backspace</kbd> undo · <kbd>N</kbd> skip ·
+      <kbd>1</kbd>–<kbd>0</kbd> modes · <kbd>Enter</kbd> submit/next · <kbd>Backspace</kbd> undo · <kbd>N</kbd> skip ·
       <kbd>A</kbd> replay · <kbd>O</kbd> overlay · <kbd>R</kbd> run · <kbd>?</kbd> rules
     </footer>
   </aside>
@@ -141,6 +160,8 @@
       <li><b>Misses</b>: replays questions you got wrong. Get one right and it drops off the list.</li>
       <li><b>Sandbox</b>: build your own maps and click around. The <i>Steps</i> and <i>Search order</i> overlays
         show the search itself.</li>
+      <li><b>Dodge</b>: survive poison splats. Pools only hurt if a tick ends with you on one, so running over a
+        pool mid-tick is fine. Splats don't block the pathfinder, so you have to choose clicks whose tick stops miss them.</li>
       <li><b>Explore</b>: free roam. Click around and the character runs on real 0.6s ticks, routing from its true tile.</li>
     </ul>
     <p class="meta">These rules were checked against rsmod's OSRS route finder (RouteFinding.kt, ReachStrategy.kt) and

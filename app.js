@@ -15,6 +15,7 @@
     { id: 'misses', label: 'Misses' },
     { id: 'sandbox', label: 'Sandbox' },
     { id: 'explore', label: 'Explore' },
+    { id: 'dodge', label: 'Dodge' },
   ];
   const QUIZ = ['trace', 'step', 'tick', 'unreach', 'melee'];
   const NAME = { trace: 'Trace', step: 'Tie-breaks', tick: 'Tick', unreach: 'Unreachable', melee: 'Melee', all: 'All' };
@@ -54,6 +55,10 @@
     hover: null, anim: null, raf: 0, ts: 32, mouseDown: false,
     ex: { grid: null, pos: null, npcs: [], route: [], pending: null, seg: null, dest: null, click: null,
       tick: 0, tickAt: 0, timer: 0, raf: 0, showPath: true, last: null },
+    dg: { grid: null, pos: null, npcs: [], route: [], pending: null, seg: null, dest: null, click: null,
+      tick: 0, tickAt: 0, timer: 0, raf: 0, showPath: true, last: null, hazards: true,
+      hp: 99, hits: 0, splats: [], wave: 0, nextWave: 3, dead: false, paused: false, hitFx: null,
+      showStops: true, strict: false, best: saved.dodgeBest || 0, rng: null },
     sb: { grid: null, src: null, npc: null, goal: null, res: null, search: null, tool: 'walk', npcSize: 2, paint: null },
   };
   if (saved.sandbox) {
@@ -68,7 +73,7 @@
     const sb = st.sb;
     try {
       localStorage.setItem(STORE, JSON.stringify({
-        mode: st.mode, level: st.level, terrain: st.terrain, size: st.size, run: st.run, overlay: st.overlay,
+        mode: st.mode, dodgeBest: st.dg.best, level: st.level, terrain: st.terrain, size: st.size, run: st.run, overlay: st.overlay,
         stats: st.stats, misses: st.misses,
         sandbox: sb.grid ? { grid: sb.grid.toJSON(), src: sb.src, npc: sb.npc } : null,
       }));
@@ -426,9 +431,10 @@
 
   function render() {
     renderNav();
-    const sandbox = st.mode === 'sandbox', explore = st.mode === 'explore';
+    const sandbox = st.mode === 'sandbox', explore = isRoam();
     $('sandboxPanel').classList.toggle('hidden', !sandbox);
-    $('explorePanel').classList.toggle('hidden', !explore);
+    $('explorePanel').classList.toggle('hidden', st.mode !== 'explore');
+    $('dodgePanel').classList.toggle('hidden', st.mode !== 'dodge');
     $('promptCard').classList.toggle('hidden', sandbox || explore);
     $('statsCard').classList.toggle('hidden', sandbox || explore);
     if (explore) {
@@ -448,7 +454,7 @@
     }
     const simple = !sandbox && !explore && st.level < 3;
     for (const id of ['terrain', 'size']) {
-      $(id).disabled = simple || (explore && id === 'size');
+      $(id).disabled = simple || (explore && id === 'size') || (st.mode === 'dodge' && id === 'terrain');
       $(id).title = simple ? 'Beginner and Easy use their own small maps. Switch Level to Normal to choose.' : '';
     }
     $('overlay').value = st.overlay;
@@ -596,8 +602,11 @@
   // tick, like the game client.
 
   const EXPLORE_SIZE = 24;
+  const isRoam = (m) => (m || st.mode) === 'explore' || (m || st.mode) === 'dodge';
+  const roam = () => (st.mode === 'dodge' ? st.dg : st.ex);
 
   function newExploreMap() {
+    if (st.mode === 'dodge') return newDodge();
     const ex = st.ex, rng = S.makeRng((Math.random() * 4294967296) >>> 0);
     const style = st.terrain === 'any' ? rng.pick(S.TERRAINS) : st.terrain;
     ex.grid = S.genTerrain(rng, EXPLORE_SIZE, style);
@@ -614,13 +623,13 @@
   }
 
   function startExplore() {
-    const ex = st.ex;
+    const ex = roam();
     if (!ex.grid) newExploreMap();
     stopExplore();
     ex.tickAt = performance.now();
     ex.timer = setInterval(exploreTick, TICK_MS);
     const loop = () => {
-      if (st.mode !== 'explore') return;
+      if (!isRoam() || roam() !== ex) return;
       draw();
       ex.raf = requestAnimationFrame(loop);
     };
@@ -628,13 +637,16 @@
   }
 
   function stopExplore() {
-    clearInterval(st.ex.timer);
-    cancelAnimationFrame(st.ex.raf);
-    st.ex.timer = 0;
+    for (const ex of [st.ex, st.dg]) {
+      clearInterval(ex.timer);
+      cancelAnimationFrame(ex.raf);
+      ex.timer = 0;
+    }
   }
 
   function exploreTick() {
-    const ex = st.ex;
+    const ex = roam();
+    if (ex.hazards && (ex.paused || ex.dead)) return;
     ex.tick++;
     ex.tickAt = performance.now();
     if (ex.pending) {
@@ -649,17 +661,20 @@
     ex.seg = seg;
     ex.pos = seg[seg.length - 1];
     if (!ex.route.length) ex.dest = null;
+    if (ex.hazards) dodgeTick(ex, seg);
     renderExploreInfo();
   }
 
   function exploreClick(t) {
-    const ex = st.ex, tile = { x: t.x, y: t.y };
+    const ex = roam(), tile = { x: t.x, y: t.y };
+    if (ex.dead) return;
     const npc = ex.npcs.find((n) => inRect(tile, n));
     ex.pending = npc ? Object.assign({}, npc) : { x: t.x, y: t.y, w: 1, h: 1, kind: 'tile' };
     ex.click = { x: t.x, y: t.y, red: !!npc, at: performance.now() };
   }
 
   function renderExploreInfo() {
+    if (st.mode === 'dodge') return renderDodgeInfo();
     const ex = st.ex, l = ex.last, per = st.run ? 2 : 1;
     let s = `Tick ${ex.tick} · ${st.run ? 'running' : 'walking'}`;
     if (ex.route.length) s += ` · ${plural(ex.route.length, 'step')} left (${plural(Math.ceil(ex.route.length / per), 'tick')})`;
@@ -690,7 +705,8 @@
   }
 
   function drawExplore(g) {
-    const ex = st.ex, ts = st.ts, now = performance.now();
+    const ex = roam(), ts = st.ts, now = performance.now();
+    if (ex.hazards) drawSplats(g, ex);
     drawRocks(g);
     drawWalls(g);
     ex.npcs.forEach((n) => drawNpc(g, n));
@@ -720,17 +736,19 @@
       const a = seg[i0], b = seg[Math.min(i0 + 1, seg.length - 1)];
       p = { x: a.x + (b.x - a.x) * fr, y: a.y + (b.y - a.y) * fr };
     }
+    if (ex.hazards && ex.showStops) drawTickStops(g, ex);
     ctx.strokeStyle = C.player;
     ctx.lineWidth = 2;
     ctx.strokeRect(px(ex.pos.x) + 1.5, py(ex.pos.y, g) + 1.5, ts - 3, ts - 3);
     circle(cx(p.x), cy(p.y, g), ts * 0.27);
-    ctx.fillStyle = C.avatar;
+    ctx.fillStyle = ex.dead ? '#777' : C.avatar;
     ctx.fill();
     ctx.strokeStyle = '#111';
     ctx.lineWidth = 2;
     ctx.stroke();
+    if (ex.hazards) drawHitsplat(g, ex, p, now);
     // Tick pulse in the corner: it flashes as each 0.6s tick lands.
-    const label = `tick ${ex.tick}`;
+    const label = ex.paused ? `tick ${ex.tick} · paused` : `tick ${ex.tick}`;
     ctx.font = '600 12px system-ui, sans-serif';
     const w = ctx.measureText(label).width + 26;
     ctx.fillStyle = 'rgba(0,0,0,0.7)';
@@ -749,6 +767,157 @@
     }
   }
 
+  // ---- dodge: floor hazards on top of the roam tick loop -------------------------------------
+  // Splats are telegraphed, land WARN ticks later and stay as pools for POOL_TICKS ticks. A pool
+  // hits you if a tick ends with your true tile on it (strict mode: any tile stepped on that tick).
+  // The pathfinder ignores splats, as the game's does.
+
+  const DODGE_SIZE = 16, POOL_TICKS = 3;
+
+  function newDodge() {
+    const dg = st.dg, rng = S.makeRng((Math.random() * 4294967296) >>> 0);
+    dg.rng = rng;
+    dg.grid = S.genTerrain(rng, DODGE_SIZE, 'light');
+    dg.pos = freeNear(dg.grid, DODGE_SIZE >> 1, DODGE_SIZE >> 1);
+    Object.assign(dg, {
+      npcs: [], route: [], pending: null, seg: null, dest: null, click: null, tick: 0, last: null,
+      hp: 99, hits: 0, splats: [], wave: 0, nextWave: 3, dead: false, paused: false, hitFx: null,
+    });
+    renderDodgeInfo();
+  }
+
+  const poolAt = (dg, x, y, tick) => dg.splats.some((s) => s.x === x && s.y === y && s.land <= tick && tick < s.until);
+
+  function dodgeTick(dg, seg) {
+    const t = dg.tick;
+    const checked = dg.strict && seg.length > 1 ? seg.slice(1) : [dg.pos];
+    let dmg = 0;
+    for (const c of checked) if (poolAt(dg, c.x, c.y, t)) dmg += dg.rng.int(8, 15);
+    if (dmg) {
+      dg.hp = Math.max(0, dg.hp - dmg);
+      dg.hits++;
+      dg.hitFx = { at: performance.now(), dmg };
+    }
+    dg.splats = dg.splats.filter((s) => s.until > t + 1);
+    if (dg.hp <= 0) {
+      dg.dead = true;
+      dg.route = [];
+      dg.dest = null;
+      if (t > dg.best) { dg.best = t; persist(); }
+      return;
+    }
+    if (t >= dg.nextWave) {
+      spawnWave(dg);
+      dg.wave++;
+      dg.nextWave = t + Math.max(3, 6 - Math.floor(dg.wave / 4));
+    }
+  }
+
+  function spawnWave(dg) {
+    const r = dg.rng, g = dg.grid, p = dg.pos;
+    const land = dg.tick + (dg.wave < 3 ? 3 : 2), until = land + POOL_TICKS;
+    const tiles = new Map();
+    const add = (x, y) => { if (g.inBounds(x, y) && !g.isBlocked(x, y)) tiles.set(g.idx(x, y), { x, y }); };
+    const kinds = ['onYou', 'scatter', 'line', 'ring'];
+    if (dg.wave >= 3) kinds.push('onYou+scatter', 'line+scatter');
+    const kind = r.pick(kinds);
+    if (kind.includes('onYou')) for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) add(p.x + dx, p.y + dy);
+    if (kind.includes('scatter')) {
+      for (let k = 6 + Math.min(14, dg.wave * 2); k > 0; k--) add(p.x + r.int(-6, 6), p.y + r.int(-6, 6));
+    }
+    if (kind.includes('line')) {
+      const horiz = r.chance(0.5), width = dg.wave >= 4 && r.chance(0.5) ? 2 : 1;
+      for (let i = 0; i < g.w; i++) for (let k = 0; k < width; k++) (horiz ? add(i, p.y + k) : add(p.x + k, i));
+    }
+    if (kind === 'ring') {
+      for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++) if (Math.max(Math.abs(dx), Math.abs(dy)) === 2) add(p.x + dx, p.y + dy);
+      add(p.x, p.y);
+    }
+    for (const v of tiles.values()) dg.splats.push({ x: v.x, y: v.y, land, until });
+  }
+
+  function renderDodgeInfo() {
+    const dg = st.dg, pct = Math.round((100 * dg.hp) / 99);
+    let h = `<div class="hpbar"><div style="width:${pct}%"></div><span>${dg.hp} / 99</span></div>`;
+    h += `<p class="meta">Tick ${dg.tick} · wave ${dg.wave} · ${plural(dg.hits, 'hit')} taken · best ${plural(dg.best, 'tick')}${dg.paused ? ' · <b>paused</b>' : ''}</p>`;
+    if (dg.dead) h += `<p class="verdict bad">You died on tick ${dg.tick} after ${plural(dg.wave, 'wave')}.</p><p class="hint">Press Enter or Restart to go again.</p>`;
+    $('dgHud').innerHTML = h;
+    $('dgPause').textContent = dg.paused ? 'Resume' : 'Pause';
+  }
+
+  function drawSplats(g, dg) {
+    const ts = st.ts;
+    for (const s of dg.splats) {
+      const x = cx(s.x), y = cy(s.y, g);
+      if (dg.tick < s.land) {
+        circle(x, y, ts * 0.4);
+        ctx.fillStyle = 'rgba(150,255,90,0.14)';
+        ctx.fill();
+        ctx.save();
+        ctx.setLineDash([3, 3]);
+        ctx.strokeStyle = 'rgba(160,255,100,0.9)';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+        ctx.restore();
+        ctx.fillStyle = 'rgba(200,255,170,0.95)';
+        ctx.font = `700 ${Math.max(9, Math.round(ts * 0.3))}px system-ui, sans-serif`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(String(s.land - dg.tick), x, y + 1);
+      } else {
+        ctx.fillStyle = 'rgba(70,190,40,0.6)';
+        circle(x, y, ts * 0.42); ctx.fill();
+        ctx.fillStyle = 'rgba(40,140,20,0.7)';
+        circle(x - ts * 0.12, y + ts * 0.08, ts * 0.16); ctx.fill();
+        circle(x + ts * 0.14, y - ts * 0.1, ts * 0.12); ctx.fill();
+      }
+    }
+  }
+
+  // Where you'll stand at the end of each coming tick, red if a pool will be there then.
+  function drawTickStops(g, dg) {
+    if (!dg.route.length) return;
+    const ts = st.ts, stops = E.tickStops([dg.pos].concat(dg.route), st.run);
+    ctx.font = `700 ${Math.max(9, Math.round(ts * 0.26))}px system-ui, sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    for (const s of stops) {
+      const bad = poolAt(dg, s.x, s.y, dg.tick + s.tick);
+      circle(cx(s.x), cy(s.y, g), ts * 0.2);
+      ctx.fillStyle = bad ? C.bad : C.route;
+      ctx.fill();
+      ctx.fillStyle = bad ? '#fff' : '#0d1a10';
+      ctx.fillText(String(s.tick), cx(s.x), cy(s.y, g) + 1);
+    }
+  }
+
+  function drawHitsplat(g, dg, p, now) {
+    const fx = dg.hitFx;
+    if (!fx || now - fx.at > 900) return;
+    const ts = st.ts, x = cx(p.x), y = cy(p.y, g) - ts * 0.15;
+    circle(x, y, ts * 0.3);
+    ctx.fillStyle = '#b3120c';
+    ctx.fill();
+    ctx.fillStyle = '#fff';
+    ctx.font = `800 ${Math.max(10, Math.round(ts * 0.32))}px system-ui, sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(String(fx.dmg), x, y + 1);
+  }
+
+  function toggleDodgePause() {
+    const dg = st.dg;
+    if (dg.dead) return;
+    dg.paused = !dg.paused;
+    renderDodgeInfo();
+  }
+
+  function restartDodge() {
+    newDodge();
+    startExplore();
+    render();
+  }
+
   // ---- settings and modes -----------------------------------------------------------------
 
   function setMode(id) {
@@ -758,14 +927,14 @@
     st.mode = id;
     st.hover = null;
     persist();
-    if (id === 'sandbox') { initSandbox(); render(); } else if (id === 'explore') { startExplore(); render(); } else nextQuestion();
+    if (id === 'sandbox') { initSandbox(); render(); } else if (isRoam(id)) { startExplore(); render(); } else nextQuestion();
   }
 
   function setRun(v) {
     st.run = v;
     $('run').checked = v;
     persist();
-    if (st.mode === 'explore') return render();
+    if (isRoam()) return render();
     if (st.mode === 'sandbox') {
       if (st.sb.res) startAnim(st.sb.res.tiles, v);
       return render();
@@ -780,7 +949,7 @@
   }
 
   function cycleOverlay() {
-    if (st.mode === 'explore') return;
+    if (isRoam()) return;
     if (st.mode !== 'sandbox' && st.phase !== 'done') return toast('Overlays unlock after you answer');
     st.overlay = OVERLAYS[(OVERLAYS.indexOf(st.overlay) + 1) % OVERLAYS.length];
     persist();
@@ -788,7 +957,7 @@
   }
 
   function replay() {
-    if (st.mode === 'explore') return;
+    if (isRoam()) return;
     if (st.mode === 'sandbox') { if (st.sb.res) startAnim(st.sb.res.tiles, st.run); return; }
     if (st.q && st.phase === 'done') startAnim(st.q.result.tiles, st.q.run);
   }
@@ -829,8 +998,8 @@
   // ---- rendering --------------------------------------------------------------------------
 
   function view() {
-    if (st.mode === 'explore') {
-      const ex = st.ex;
+    if (isRoam()) {
+      const ex = roam();
       return ex.grid ? { g: ex.grid, src: ex.pos, overlay: 'none', search: null } : null;
     }
     if (st.mode === 'sandbox') {
@@ -903,7 +1072,7 @@
     for (let x = 1; x < g.w; x++) { ctx.moveTo(x * ts + 0.5, 0); ctx.lineTo(x * ts + 0.5, g.h * ts); }
     for (let y = 1; y < g.h; y++) { ctx.moveTo(0, y * ts + 0.5); ctx.lineTo(g.w * ts, y * ts + 0.5); }
     ctx.stroke();
-    if (st.mode === 'explore') return drawExplore(g);
+    if (isRoam()) return drawExplore(g);
 
     if (v.overlay !== 'none' && v.search) drawNumbers(g, v.search, v.overlay);
     if (v.altWindow) drawAltWindow(g, v.altWindow);
@@ -1143,7 +1312,7 @@
     if (e.button === 2) return undo();
     if (e.button !== 0) return;
     st.mouseDown = true;
-    if (st.mode === 'explore') exploreClick(t);
+    if (isRoam()) exploreClick(t);
     else if (st.mode === 'sandbox') sandboxDown(t);
     else quizClick({ x: t.x, y: t.y });
   });
@@ -1183,6 +1352,8 @@
       case 'sbRandom': newSandboxMap(true); return render();
       case 'sbClear': newSandboxMap(false); return render();
       case 'exNew': newExploreMap(); return render();
+      case 'dgRestart': return restartDodge();
+      case 'dgPause': return toggleDodgePause();
     }
   });
   $('rules').addEventListener('click', (e) => {
@@ -1195,23 +1366,25 @@
     st.level = +e.target.value;
     e.target.blur();
     persist();
-    if (st.mode !== 'sandbox' && st.mode !== 'misses' && st.mode !== 'explore') nextQuestion(); else render();
+    if (st.mode !== 'sandbox' && st.mode !== 'misses' && !isRoam()) nextQuestion(); else render();
   });
   $('terrain').addEventListener('change', (e) => {
     st.terrain = e.target.value;
     e.target.blur();
     persist();
-    if (st.mode === 'explore') { newExploreMap(); render(); } else if (st.mode !== 'sandbox' && st.mode !== 'misses') nextQuestion();
+    if (st.mode === 'explore') { newExploreMap(); render(); } else if (st.mode !== 'sandbox' && st.mode !== 'misses' && !isRoam()) nextQuestion();
   });
   $('size').addEventListener('change', (e) => {
     st.size = +e.target.value;
     e.target.blur();
     persist();
-    if (st.mode === 'sandbox') { newSandboxMap(true); render(); } else if (st.mode !== 'misses' && st.mode !== 'explore') nextQuestion();
+    if (st.mode === 'sandbox') { newSandboxMap(true); render(); } else if (st.mode !== 'misses' && !isRoam()) nextQuestion();
   });
   $('run').addEventListener('change', (e) => { e.target.blur(); setRun(e.target.checked); });
   $('overlay').addEventListener('change', (e) => { st.overlay = e.target.value; e.target.blur(); persist(); render(); });
   $('exPath').addEventListener('change', (e) => { st.ex.showPath = e.target.checked; e.target.blur(); });
+  $('dgStops').addEventListener('change', (e) => { st.dg.showStops = e.target.checked; e.target.blur(); });
+  $('dgStrict').addEventListener('change', (e) => { st.dg.strict = e.target.checked; e.target.blur(); });
   $('npcSize').addEventListener('change', (e) => { st.sb.npcSize = +e.target.value; e.target.blur(); });
 
   document.addEventListener('keydown', (e) => {
@@ -1220,10 +1393,15 @@
     const k = e.key, low = k.toLowerCase();
     if (!$('rules').classList.contains('hidden')) { if (k === 'Escape' || k === '?') showRules(false); return; }
     if (k === '?') return showRules(true);
-    if (/^[1-9]$/.test(k)) return setMode(MODES[+k - 1].id);
+    if (/^[0-9]$/.test(k)) return setMode(MODES[k === '0' ? 9 : +k - 1].id);
     if (low === 'r') return setRun(!st.run);
     if (low === 'o') return cycleOverlay();
     if (low === 'a') return replay();
+    if (st.mode === 'dodge') {
+      if (k === ' ' || low === 'p') { e.preventDefault(); toggleDodgePause(); }
+      else if (k === 'Enter' && st.dg.dead) restartDodge();
+      return;
+    }
     if (st.mode === 'explore') return;
     if (st.mode === 'sandbox') {
       const tools = { w: 'walk', b: 'rock', l: 'wall', p: 'player', n: 'npc' };
@@ -1249,7 +1427,7 @@
   $('size').value = String(st.size);
   $('run').checked = st.run;
   $('npcSize').value = String(st.sb.npcSize);
-  if (st.mode === 'sandbox') { initSandbox(); render(); } else if (st.mode === 'explore') { startExplore(); render(); } else nextQuestion();
+  if (st.mode === 'sandbox') { initSandbox(); render(); } else if (isRoam()) { startExplore(); render(); } else nextQuestion();
 
   // Exposed for automated smoke tests.
   window.__trainer = { st, nextQuestion, setMode, quizClick, finish };

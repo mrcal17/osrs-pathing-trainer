@@ -19,6 +19,7 @@ of missed questions and the sandbox map are saved in the browser's localStorage.
 | 7 | Misses | Replays questions you got wrong (by seed). A right answer removes one. |
 | 8 | Sandbox | Paint rocks and walls, place the player or an NPC, and click to see routes. |
 | 9 | Explore | Free roam: click around and run on real 0.6s ticks, with the true tile and click handling the game uses. |
+| 0 | Dodge | Survive poison splats on 0.6s ticks. Pools hit only if a tick ends on them, and the pathfinder ignores them. |
 
 Other keys: `Enter`/`Space` submits or goes to the next question, `Backspace`/right-click undoes a trace step,
 `N` skips, `A` replays the movement, `O` cycles the overlays (steps from you / search order, unlocked after you

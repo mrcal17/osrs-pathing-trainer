@@ -14,7 +14,7 @@ def tile_xy(page, x, y):
     return page.evaluate(
         """([x, y]) => {
             const st = window.__trainer.st, r = document.getElementById('cv').getBoundingClientRect();
-            const g = st.mode === 'sandbox' ? st.sb.grid : st.mode === 'explore' ? st.ex.grid : st.q.grid;
+            const g = st.mode === 'sandbox' ? st.sb.grid : st.mode === 'explore' ? st.ex.grid : st.mode === 'dodge' ? st.dg.grid : st.q.grid;
             return [r.left + (x + 0.5) * st.ts, r.top + (g.h - 0.5 - y) * st.ts];
         }""",
         [x, y],
@@ -169,6 +169,38 @@ with sync_playwright() as p:
     probe = page.evaluate(f"{ex}.probe")
     if len(probe) != 2 or probe[0] != start:
         failures.append(f"explore re-route sources: {probe}, start {start}")
+
+    # Dodge: end-of-tick hits, run-over is safe, strict mode counts every stepped tile.
+    page.keyboard.press("0")
+    page.wait_for_timeout(300)
+    dg = "window.__trainer.st.dg"
+    lane = page.evaluate(f"""(() => {{ const dg = {dg}, g = dg.grid;
+        for (let y = 0; y < g.h; y++) for (let x = 0; x + 2 < g.w; x++)
+          if (!g.isBlocked(x, y) && !g.isBlocked(x + 1, y) && !g.isBlocked(x + 2, y) && !g.hasWallE(x, y) && !g.hasWallE(x + 1, y)) return {{ x, y }};
+      }})()""")
+    def dodge_case(stand_still, strict):
+        return page.evaluate(f"""(async () => {{ const dg = {dg}, L = {lane};
+            Object.assign(dg, {{ hp: 99, hits: 0, nextWave: 1e9, strict: {str(strict).lower()}, pending: null, dead: false, paused: true }});
+            dg.pos = {{ x: L.x, y: L.y }};
+            const t = dg.tick + 1;
+            dg.route = {('[]' if stand_still else '[{ x: L.x + 1, y: L.y }, { x: L.x + 2, y: L.y }]')};
+            dg.splats = [{{ x: L.x + {0 if stand_still else 1}, y: L.y, land: t, until: t + 3 }}];
+            dg.paused = false;
+            while (dg.tick < t) await new Promise((r) => setTimeout(r, 5));
+            dg.paused = true;
+            return dg.hits; }})()""")
+    page.keyboard.press("r") if not page.evaluate("window.__trainer.st.run") else None
+    if dodge_case(True, False) != 1:
+        failures.append("dodge: standing on a pool at tick end should hit")
+    if dodge_case(False, False) != 0:
+        failures.append("dodge: running over a pool mid-tick should be safe")
+    if dodge_case(False, True) != 1:
+        failures.append("dodge: strict mode should count a run-over tile")
+    page.evaluate(f"(() => {{ const dg = {dg}; Object.assign(dg, {{ strict: false, paused: false, nextWave: dg.tick + 1 }}); }})()")
+    page.wait_for_timeout(1300)
+    click_tile(page, 1, 1)
+    page.wait_for_timeout(700)
+    page.screenshot(path=str(SHOTS / "dodge.png"))
 
     page.keyboard.press("?")
     page.screenshot(path=str(SHOTS / "rules.png"))
