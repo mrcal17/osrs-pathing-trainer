@@ -72,7 +72,7 @@
     <section class="card" id="statsCard"></section>
 
     <footer class="keys">
-      <kbd>1</kbd>–<kbd>7</kbd> modes · <kbd>Enter</kbd> submit/next · <kbd>Backspace</kbd> undo · <kbd>N</kbd> skip ·
+      <kbd>1</kbd>–<kbd>8</kbd> modes · <kbd>Enter</kbd> submit/next · <kbd>Backspace</kbd> undo · <kbd>N</kbd> skip ·
       <kbd>A</kbd> replay · <kbd>O</kbd> overlay · <kbd>R</kbd> run · <kbd>?</kbd> rules
     </footer>
   </aside>
@@ -89,11 +89,16 @@
     <ol>
       <li><b>Fewest steps, and a diagonal counts as one step.</b> When you click, the game runs a breadth-first
         search outward from your tile. You always take a route with the fewest steps.</li>
-      <li><b>Ties are settled by the search order.</b> From each tile the search tries neighbours in the order
-        <b>W, E, S, N, SW, SE, NW, NE</b>. The route is then read <i>backwards</i> from the destination: each
-        tile is entered from whichever neighbour the search expanded first.</li>
-      <li><b>In open ground you go straight first and diagonal last.</b> That falls out of the order above.
-        Click 3 east and 1 north and you go E, E, NE. Click 1 east and 3 north and you go N, N, NE.</li>
+      <li><b>Tie-breaks: the earliest direction that still works.</b> When several routes are equally short, go
+        step by step. At each step take the first direction in the order <b>W, E, S, N, SW, SE, NW, NE</b> that still
+        keeps you on a shortest route. Then do the same from the next tile.</li>
+      <li><b>So straight beats diagonal.</b> All four straight directions come before the diagonals, so you take a
+        straight step whenever one still works. In open ground that means straight first and diagonal last: click 3 east
+        and 1 north and you go E, E, NE. When two straight steps both work (going round a pillar either way), W beats E
+        and S beats N.
+        <span class="meta">(The game actually searches outward from you and reads the route backwards from the
+        destination. That always produces the same route as this forward rule, which the tests check on thousands of
+        random maps.)</span></li>
       <li><b>No corner cutting.</b> A diagonal step needs both tiles beside it to be walkable, and it's
         blocked if a wall touches the corner it passes.</li>
       <li><b>Ticks.</b> Running moves 2 route tiles per tick, walking moves 1. A run with an odd number of steps ends with a
@@ -113,6 +118,8 @@
     <h3>Modes</h3>
     <ul>
       <li><b>Trace</b>: click every tile of the route in order.</li>
+      <li><b>Tie-breaks</b>: walk the route one step at a time. Each step is checked straight away, and a wrong step
+        shows every direction that tied and its place in the order.</li>
       <li><b>Tick</b>: say where you stand at the end of tick N.</li>
       <li><b>Unreachable</b>: say where you end up when the click target can't be stood on.</li>
       <li><b>Melee</b>: say which tile you attack an NPC from.</li>

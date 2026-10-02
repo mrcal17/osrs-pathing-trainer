@@ -7,6 +7,7 @@
 
   const MODES = [
     { id: 'trace', label: 'Trace' },
+    { id: 'step', label: 'Tie-breaks' },
     { id: 'tick', label: 'Tick' },
     { id: 'unreach', label: 'Unreachable' },
     { id: 'melee', label: 'Melee' },
@@ -14,8 +15,8 @@
     { id: 'misses', label: 'Misses' },
     { id: 'sandbox', label: 'Sandbox' },
   ];
-  const QUIZ = ['trace', 'tick', 'unreach', 'melee'];
-  const NAME = { trace: 'Trace', tick: 'Tick', unreach: 'Unreachable', melee: 'Melee', all: 'All' };
+  const QUIZ = ['trace', 'step', 'tick', 'unreach', 'melee'];
+  const NAME = { trace: 'Trace', step: 'Tie-breaks', tick: 'Tick', unreach: 'Unreachable', melee: 'Melee', all: 'All' };
   const TERRAIN_NAME = { any: 'Any', pillars: 'Pillars', rocks: 'Rocks', walls: 'Walls & fences', rooms: 'Rooms', mixed: 'Mixed' };
   const OVERLAYS = ['none', 'dist', 'order'];
   const TICK_MS = 600;
@@ -48,7 +49,7 @@
     overlay: OVERLAYS.includes(saved.overlay) ? saved.overlay : 'none',
     stats: saved.stats || {},
     misses: Array.isArray(saved.misses) ? saved.misses : [],
-    q: null, phase: 'ask', clicks: [], pick: null, verdict: null,
+    q: null, phase: 'ask', clicks: [], pick: null, verdict: null, stepIdx: 0, stepLog: [],
     hover: null, anim: null, raf: 0, ts: 32, mouseDown: false,
     sb: { grid: null, src: null, npc: null, goal: null, res: null, search: null, tool: 'walk', npcSize: 2, paint: null },
   };
@@ -104,7 +105,7 @@
 
   function nextQuestion() {
     stopAnim();
-    Object.assign(st, { phase: 'ask', clicks: [], pick: null, verdict: null, q: null });
+    Object.assign(st, { phase: 'ask', clicks: [], pick: null, verdict: null, q: null, stepIdx: 0, stepLog: [] });
     const replaying = st.mode === 'misses';
     let spec;
     if (replaying) {
@@ -133,6 +134,15 @@
     const q = st.q;
     if (!q || st.phase !== 'ask') return;
     if (q.grid.isBlocked(t.x, t.y)) return toast('That tile is blocked');
+    if (q.mode === 'step') {
+      const tiles = q.result.tiles, cur = tiles[st.stepIdx], next = tiles[st.stepIdx + 1];
+      if (Math.max(Math.abs(t.x - cur.x), Math.abs(t.y - cur.y)) !== 1) return toast('Pick a tile next to you');
+      const ok = same(t, next);
+      st.stepLog.push({ i: st.stepIdx, ok, from: cur, user: t, why: ok ? '' : stepWhy(q, cur, next, t) });
+      st.stepIdx++;
+      if (st.stepIdx >= tiles.length - 1) return finish();
+      return render();
+    }
     if (q.mode !== 'trace') { st.pick = t; return finish(); }
     const last = st.clicks.length ? st.clicks[st.clicks.length - 1] : q.src;
     if (st.clicks.length && same(t, last)) { st.clicks.pop(); return render(); }
@@ -175,6 +185,7 @@
 
   function judge(q) {
     if (q.mode === 'trace') return judgeTrace(q);
+    if (q.mode === 'step') return judgeStep(q);
     if (q.mode === 'tick') return judgeTick(q);
     if (q.mode === 'unreach') return judgeUnreach(q);
     return judgeMelee(q);
@@ -192,29 +203,60 @@
     } else if (d.kind === 'longer') {
       v.body = `<p>Your route takes ${d.userSteps} steps; the game's takes ${d.trueSteps}. You always walk a route with the fewest steps, and a diagonal counts as one step.</p>`;
     } else if (d.kind === 'tiebreak') {
-      v.body = tiebreakHTML(q, d, v.marks);
+      const i = d.firstDiff, tr = q.result.tiles, user = [q.src].concat(st.clicks);
+      v.body = `<p>Your route is just as short, so the tie-break decides it. The routes split at step ${i}.</p>` + stepWhy(q, tr[i - 1], tr[i], user[i]);
+      v.marks.push({ x: tr[i].x, y: tr[i].y, label: 'game', color: C.good }, { x: user[i].x, y: user[i].y, label: 'you', color: C.user });
     } else {
       v.body = "<p>Your trace skips a tile. The green line is the game's route.</p>";
     }
-    v.body += '<p class="tip">Open ground: straight steps first, diagonals last. Ties are settled by the search order W, E, S, N, SW, SE, NW, NE.</p>';
+    v.body += `<p class="tip">${RULE}</p>`;
     return v;
   }
 
-  function tiebreakHTML(q, d, marks) {
-    const s = q.result.search, g = q.grid;
-    const a = d.options.find((o) => same(o, d.A)), b = d.options.find((o) => same(o, d.B));
-    marks.push({ x: d.T.x, y: d.T.y, label: 'T', color: C.target },
-      { x: d.A.x, y: d.A.y, label: 'A', color: C.good }, { x: d.B.x, y: d.B.y, label: 'B', color: C.user });
-    let h = '<p>Your route is just as short, so the tie-break decides it. The game builds the route <b>backwards from the X</b>, and each tile is entered from whichever neighbour the search expanded first.</p>';
-    if (!a || !b) return h + "<p>The game's route goes through A instead of B.</p>";
-    h += `<p>Tile <b>T</b> can be entered from <b>A</b> (a ${a.dir} step) or <b>B</b> (a ${b.dir} step). Both are ${plural(s.dist[g.idx(a.x, a.y)], 'step')} from you. `;
-    if (a.parent >= 0 && a.parent === b.parent) {
-      const da = E.DIRS[s.via[g.idx(a.x, a.y)]].name, db = E.DIRS[s.via[g.idx(b.x, b.y)]].name;
-      h += `Both were found from the same tile, A by a ${da} step and B by a ${db} step. ${da} comes before ${db} in the order W, E, S, N, SW, SE, NW, NE. `;
-    } else {
-      h += `The search expanded A before B (#${a.order} vs #${b.order}; hover a tile to see its number). `;
-    }
-    return h + 'So the route goes through A.</p>';
+  const RULE = 'Tie-break rule: at every step, take the first direction in W, E, S, N, SW, SE, NW, NE that still keeps you on a shortest route. Straight directions come before diagonals, so you go straight whenever a straight step still works.';
+  const ORDINAL = ['1st', '2nd', '3rd', '4th', '5th', '6th', '7th', '8th'];
+
+  function toDistOf(q) {
+    const end = q.result.tiles[q.result.tiles.length - 1];
+    return q.toDist || (q.toDist = E.distTo(q.grid, end.x, end.y));
+  }
+
+  // Why the game steps from `from` to `gameTo` rather than to `userTo`.
+  function stepWhy(q, from, gameTo, userTo) {
+    const g = q.grid, toDist = toDistOf(q);
+    const opts = E.shortestSteps(g, from.x, from.y, toDist);
+    const dir = (to) => E.dirName(to.x - from.x, to.y - from.y);
+    const game = dir(gameTo), user = dir(userTo);
+    const blocker = g.stepBlocker(from.x, from.y, userTo.x - from.x, userTo.y - from.y);
+    let why;
+    if (blocker) why = `${user} isn't possible: ${WHY[blocker]}`;
+    else if (!opts.some((o) => o.name === user)) {
+      const left = toDist[g.idx(userTo.x, userTo.y)];
+      why = left < 0 ? "You can't reach the end from that tile."
+        : `${user} doesn't keep you on a shortest route. It costs ${plural(1 + left - toDist[g.idx(from.x, from.y)], 'extra step')}.`;
+    } else why = `${user} also keeps you on a shortest route, but ${game} comes earlier in the order.`;
+    const list = opts.map((o) => `<b>${o.name}</b> (${ORDINAL[o.k]})`).join(', ');
+    return `<p>You went <b>${user}</b> and the game goes <b>${game}</b>. ${why} From that tile, ${opts.length > 1 ? 'the steps that keep you on a shortest route are' : 'the only step that keeps you on a shortest route is'} ${list}.</p>`;
+  }
+
+  function judgeStep(q) {
+    const total = q.result.tiles.length - 1, wrong = st.stepLog.filter((s) => !s.ok);
+    const missing = total - st.stepLog.length;
+    const v = { correct: wrong.length === 0 && missing === 0, marks: [] };
+    let h = `<p>${st.stepLog.length - wrong.length} of ${plural(total, 'step')} right${missing ? ` (${missing} not answered)` : ''}.</p>`;
+    for (const s of wrong) h += `<p class="meta">Step ${s.i + 1}</p>${s.why}`;
+    v.body = h + `<p class="tip">${RULE}</p>`;
+    return v;
+  }
+
+  // Marks for the last wrong step: every tied option, labelled with its place in the order.
+  function stepMarks(q) {
+    const s = st.stepLog[st.stepLog.length - 1];
+    if (!s || s.ok) return null;
+    const opts = E.shortestSteps(q.grid, s.from.x, s.from.y, toDistOf(q));
+    const marks = opts.map((o, j) => ({ x: o.x, y: o.y, label: ORDINAL[o.k], color: j === 0 ? C.good : C.muted }));
+    if (!opts.some((o) => same(o, s.user))) marks.push({ x: s.user.x, y: s.user.y, label: '✗', color: C.bad });
+    return marks;
   }
 
   function judgeTick(q) {
@@ -300,6 +342,7 @@
 
   // Shown on Beginner and Easy questions.
   const HINT = {
+    step: "at every step, take the first direction in W, E, S, N, SW, SE, NW, NE that still keeps you on a shortest route. So go straight whenever a straight step still works, and when two straight steps both work, W beats E beats S beats N.",
     trace: "you always take the fewest steps, and a diagonal step counts as one. With nothing in the way you do the straight part first and the diagonal steps last. You can't cut a corner past a rock.",
     tick: "work out the route first, then count along it. Running covers 2 tiles per tick (tick 1 ends 2 steps in, tick 2 ends 4 steps in). Walking covers 1.",
     unreach: "you walk to the reachable tile closest to the X in a straight line. A tile straight beside the rock beats a diagonal one. If two tie, the one with fewer steps wins, then the westmost.",
@@ -309,7 +352,11 @@
   function promptHTML(q) {
     const ask = st.phase === 'ask';
     let title, text;
-    if (q.mode === 'trace') {
+    if (q.mode === 'step') {
+      const total = q.result.tiles.length - 1;
+      title = ask ? `Tie-breaks: step ${st.stepIdx + 1} of ${total}` : 'Tie-breaks';
+      text = 'You click the <b class="y">yellow X</b>. Walk there one step at a time: click the tile you step onto next. Each step is checked as you go.';
+    } else if (q.mode === 'trace') {
       title = 'Trace the route';
       text = "You click the <b class=\"y\">yellow X</b>. Click every tile you'll step on, in order, ending on the X.";
     } else if (q.mode === 'tick') {
@@ -323,11 +370,13 @@
       text = `You click <b>Attack</b> on the <b class="r">${q.target.w}×${q.target.h} NPC</b> with a melee weapon. Click the tile you'll stop on.`;
     }
     const hint = (q.mode === 'trace' && ask ? '<p class="hint">Backspace or right-click undoes a step. Enter submits early.</p>' : '') +
-      (q.level < 3 ? `<p class="tip"><b>Rule:</b> ${HINT[q.mode]}</p>` : '');
+      (q.level < 3 || q.mode === 'step' ? `<p class="tip"><b>Rule:</b> ${HINT[q.mode]}</p>` : '');
+    const last = q.mode === 'step' && ask ? st.stepLog[st.stepLog.length - 1] : null;
+    const feedback = last ? (last.ok ? `<p class="verdict ok">✓ Step ${last.i + 1} right</p>` : `<p class="verdict bad">✗ Step ${last.i + 1}</p>${last.why}<p class="hint">You've been moved to the game's tile. Keep going.</p>`) : '';
     const btns = ask ? `<div class="row">${q.mode === 'trace' ? '<button data-act="undo">Undo</button><button data-act="submit">Submit</button>' : ''}<button data-act="reveal">Show answer</button><button data-act="skip">Skip <kbd>N</kbd></button></div>` : '';
     const label = st.mode === 'mixed' || st.mode === 'misses' ? `${NAME[q.mode]} · ` : '';
     const where = q.level < 3 ? S.LEVELS[q.level].name : TERRAIN_NAME[q.terrain];
-    return `<h2>${title}</h2><p>${text}</p>${hint}${btns}<p class="meta">${label}${where} · ${q.size}×${q.size} · seed ${q.seed}</p>`;
+    return `<h2>${title}</h2><p>${text}</p>${hint}${feedback}${btns}<p class="meta">${label}${where} · ${q.size}×${q.size} · seed ${q.seed}</p>`;
   }
 
   function resultHTML(q, v) {
@@ -621,11 +670,13 @@
     const q = st.q;
     if (!q) return null;
     const done = st.phase === 'done', npc = q.target.kind === 'npc';
+    const stepping = q.mode === 'step' && !done;
     return {
-      g: q.grid, src: q.src, npc: npc ? q.target : null, target: npc ? null : q.target,
+      g: q.grid, src: stepping ? q.result.tiles[st.stepIdx] : q.src,
+      walked: stepping && st.stepIdx > 0 ? q.result.tiles.slice(0, st.stepIdx + 1) : null, npc: npc ? q.target : null, target: npc ? null : q.target,
       res: done ? q.result : null, run: q.run, overlay: done ? st.overlay : 'none', search: done ? q.result.search : null,
       clicks: q.mode === 'trace' ? st.clicks : null, pick: st.pick, done,
-      marks: done && st.verdict ? st.verdict.marks : null,
+      marks: done && st.verdict ? st.verdict.marks : stepping ? stepMarks(q) : null,
       wrongFrom: done && st.verdict && st.verdict.d && !st.verdict.correct ? st.verdict.d.firstDiff : -1,
       altWindow: done && q.result.alternative ? q.target : null,
     };
@@ -686,6 +737,7 @@
     if (v.npc) drawNpc(g, v.npc);
     if (v.target) drawX(g, v.target);
     if (v.res) drawRoute(g, v.res.tiles, v.run);
+    if (v.walked) drawRoute(g, v.walked, false);
     if (v.clicks) drawTrace(g, v.src, v.clicks, v.done, v.wrongFrom);
     if (v.pick) drawPick(g, v.pick, st.verdict ? (st.verdict.correct ? C.good : C.bad) : C.user);
     if (v.marks) drawMarks(g, v.marks);
@@ -990,7 +1042,7 @@
     const k = e.key, low = k.toLowerCase();
     if (!$('rules').classList.contains('hidden')) { if (k === 'Escape' || k === '?') showRules(false); return; }
     if (k === '?') return showRules(true);
-    if (/^[1-7]$/.test(k)) return setMode(MODES[+k - 1].id);
+    if (/^[1-8]$/.test(k)) return setMode(MODES[+k - 1].id);
     if (low === 'r') return setRun(!st.run);
     if (low === 'o') return cycleOverlay();
     if (low === 'a') return replay();

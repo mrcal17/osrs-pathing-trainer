@@ -32,7 +32,22 @@ def q(page, expr):
 
 def answer(page, correct):
     mode = q(page, "q.mode")
-    if mode == "trace":
+    if mode == "step":
+        tiles = q(page, "q.result.tiles")
+        if not correct:
+            s, nxt = tiles[0], tiles[1]
+            for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (1, -1), (-1, 1), (1, 1)]:
+                w = {"x": s["x"] + dx, "y": s["y"] + dy}
+                if w != nxt and q(page, f"q.grid.inBounds({w['x']},{w['y']}) && !q.grid.isBlocked({w['x']},{w['y']})"):
+                    break
+            click_tile(page, w["x"], w["y"])
+            page.wait_for_timeout(100)
+            if len(tiles) > 2:
+                page.screenshot(path=str(SHOTS / "step_feedback.png"))
+            tiles = tiles[1:]
+        for t in tiles[1:]:
+            click_tile(page, t["x"], t["y"])
+    elif mode == "trace":
         tiles = q(page, "q.result.tiles")[1:]
         if not correct:
             tiles = tiles[:-1]  # stop short, then submit with Enter
@@ -62,7 +77,7 @@ with sync_playwright() as p:
     page.reload()
 
     failures = []
-    for key, mode in [("1", "trace"), ("2", "tick"), ("3", "unreach"), ("4", "melee")]:
+    for key, mode in [("1", "trace"), ("2", "step"), ("3", "tick"), ("4", "unreach"), ("5", "melee")]:
         page.keyboard.press(key)
         for want in (True, False):
             for _ in range(3):
@@ -85,12 +100,12 @@ with sync_playwright() as p:
     page.keyboard.press("o")
 
     # Mixed + misses.
-    page.keyboard.press("5")
+    page.keyboard.press("6")
     for _ in range(4):
         answer(page, False)
         page.keyboard.press("Enter")
     misses = page.evaluate("window.__trainer.st.misses.length")
-    page.keyboard.press("6")
+    page.keyboard.press("7")
     page.wait_for_timeout(100)
     _, ok = answer(page, True)
     after = page.evaluate("window.__trainer.st.misses.length")
@@ -98,7 +113,7 @@ with sync_playwright() as p:
         failures.append(f"misses: before={misses} ok={ok} after={after}")
 
     # Sandbox: place an NPC, draw walls/rocks, walk, attack.
-    page.keyboard.press("7")
+    page.keyboard.press("8")
     page.click("button[data-act=sbClear]")
     page.keyboard.press("b")
     for x in range(5, 10):

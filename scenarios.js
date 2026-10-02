@@ -169,6 +169,18 @@
     return walkQuestion(rng, g, L.trace[0], L.trace[1], 0.25, strict && L.filter);
   }
 
+  // Step-by-step drill: a walk whose route has real ties (more than one shortest-route step).
+  function genStep(rng, g, opts, strict, L) {
+    const q = walkQuestion(rng, g, Math.max(3, L.trace[0]), L.trace[1], 1, false);
+    if (!q) return null;
+    const tiles = q.result.tiles, end = tiles[tiles.length - 1];
+    q.toDist = E.distTo(g, end.x, end.y);
+    let ties = 0;
+    for (let i = 0; i < tiles.length - 1; i++) if (E.shortestSteps(g, tiles[i].x, tiles[i].y, q.toDist).length > 1) ties++;
+    if (ties < (strict && L.filter ? 3 : 2)) return null;
+    return q;
+  }
+
   function genTick(rng, g, opts, strict, L) {
     const q = walkQuestion(rng, g, L.tick[0], L.tick[1], 0.35, strict && L.filter);
     if (!q) return null;
@@ -237,7 +249,7 @@
     return { grid: g, src, target: npc, result: res };
   }
 
-  const GENERATORS = { trace: genTrace, tick: genTick, unreach: genUnreach, melee: genMelee };
+  const GENERATORS = { trace: genTrace, step: genStep, tick: genTick, unreach: genUnreach, melee: genMelee };
 
   // opts: { level: 1-3 (default 3), terrain: 'any' | one of TERRAINS, size, run, seed }.
   // Beginner and Easy pick their own grid size and terrain.

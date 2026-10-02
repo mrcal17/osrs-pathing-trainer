@@ -245,6 +245,25 @@
     return out.sort((a, b) => a.order - b.order);
   }
 
+  // Steps from every tile to (tx, ty). Legal moves between walkable tiles are symmetric, so this is
+  // just the same search run from the target.
+  function distTo(grid, tx, ty) {
+    return search(grid, tx, ty, null).dist;
+  }
+
+  // From (x, y), the directions that keep you on a shortest route to the tile `toDist` was built
+  // for, in search order. The game's route always takes the first one: its route is the
+  // lexicographically smallest shortest route over W < E < S < N < SW < SE < NW < NE.
+  function shortestSteps(grid, x, y, toDist) {
+    const here = toDist[grid.idx(x, y)], out = [];
+    for (let k = 0; k < 8; k++) {
+      const d = DIRS[k], nx = x + d.dx, ny = y + d.dy;
+      if (!grid.inBounds(nx, ny) || !grid.canStep(x, y, d.dx, d.dy)) continue;
+      if (toDist[grid.idx(nx, ny)] === here - 1) out.push({ k, name: d.name, x: nx, y: ny });
+    }
+    return out;
+  }
+
   // Valid melee tiles the player can reach, in the order the game would prefer them.
   function meleeCandidates(grid, result) {
     const s = result.search, out = [];
@@ -287,6 +306,6 @@
   return {
     DIRS, ALT_RANGE, ALT_MAX_DIST, MAX_TURNS, Grid,
     dirName, search, findPath, closestApproach, meleeReach, meleeTileIssue, meleeCandidates,
-    rectDist2, turnPoints, tickStops, discoverers, diagnoseTrace,
+    rectDist2, turnPoints, tickStops, discoverers, diagnoseTrace, distTo, shortestSteps,
   };
 });

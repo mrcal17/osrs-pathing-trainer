@@ -234,7 +234,7 @@ test('random maps match the bit-flag reference (walk, unreachable, melee)', () =
 });
 
 test('scenario generator produces every mode deterministically', () => {
-  for (const mode of ['trace', 'tick', 'unreach', 'melee']) {
+  for (const mode of ['trace', 'step', 'tick', 'unreach', 'melee']) {
     for (const terrain of ['any', ...S.TERRAINS]) {
       for (let seed = 1; seed <= 12; seed++) {
         const opts = { terrain, size: 16, run: seed % 2 === 0, seed };
@@ -243,7 +243,8 @@ test('scenario generator produces every mode deterministically', () => {
         assert.strictEqual(JSON.stringify(a.grid.toJSON()), JSON.stringify(b.grid.toJSON()));
         assert.deepStrictEqual([a.src, a.target], [b.src, b.target]);
         assert.ok(a.result.tiles.length >= 2, 'player moves');
-        if (mode === 'trace') assert.ok(a.result.reached && !a.result.truncated);
+        if (mode === 'trace' || mode === 'step') assert.ok(a.result.reached && !a.result.truncated);
+        if (mode === 'step') assert.ok(a.result.tiles.filter((c, i) => i < a.result.tiles.length - 1 && E.shortestSteps(a.grid, c.x, c.y, a.toDist).length > 1).length >= 2, 'has ties');
         if (mode === 'unreach') assert.ok(a.result.alternative);
         if (mode === 'melee') assert.ok(a.result.reached && a.result.npc);
         if (mode === 'tick') {
@@ -256,17 +257,45 @@ test('scenario generator produces every mode deterministically', () => {
   }
 });
 
+test('forward rule: first direction (W,E,S,N,SW,SE,NW,NE) that stays shortest = the game route', () => {
+  const rng = S.makeRng(777);
+  let checked = 0;
+  for (let n = 0; n < 4000; n++) {
+    const size = rng.int(6, 20), g = new E.Grid(size, size);
+    const pr = rng.next() * 0.3, pw = rng.next() * 0.3;
+    for (let i = 0; i < size * size; i++) {
+      if (rng.chance(pr)) g.blocked[i] = 1;
+      if (rng.chance(pw)) g.wallE[i] = 1;
+      if (rng.chance(pw)) g.wallN[i] = 1;
+    }
+    const src = T(rng.int(0, size - 1), rng.int(0, size - 1));
+    if (g.isBlocked(src.x, src.y)) continue;
+    const npc = rng.chance(0.3), s = npc ? rng.int(1, 3) : 1;
+    const r = E.findPath(g, src, { x: rng.int(0, size - s), y: rng.int(0, size - s), w: s, h: s, kind: npc ? 'npc' : 'tile' });
+    if (r.noRoute) continue;
+    const end = r.fullTiles[r.fullTiles.length - 1], toDist = E.distTo(g, end.x, end.y);
+    const greedy = [src];
+    for (let cur = src; cur.x !== end.x || cur.y !== end.y;) {
+      cur = E.shortestSteps(g, cur.x, cur.y, toDist)[0];
+      greedy.push(T(cur.x, cur.y));
+    }
+    assert.strictEqual(fmt(greedy), fmt(r.fullTiles), `case ${n}`);
+    checked++;
+  }
+  assert.ok(checked > 3000);
+});
+
 test('Beginner and Easy levels stay small and short', () => {
   for (const level of [1, 2]) {
     const L = S.LEVELS[level];
-    for (const mode of ['trace', 'tick', 'unreach', 'melee']) {
+    for (const mode of ['trace', 'step', 'tick', 'unreach', 'melee']) {
       for (let seed = 1; seed <= 40; seed++) {
         const q = S.generate(mode, { level, size: 20, terrain: 'walls', run: true, seed });
         assert.ok(q, `${level}/${mode}/${seed}`);
         assert.strictEqual(q.size, L.size);
         assert.strictEqual(q.grid.wallE.some(Boolean) || q.grid.wallN.some(Boolean), false, 'no walls');
         const steps = q.result.tiles.length - 1;
-        const [lo, hi] = L[mode];
+        const [lo, hi] = L[mode === 'step' ? 'trace' : mode];
         assert.ok(steps <= hi && (steps >= lo || mode === 'melee'), `${level}/${mode} steps ${steps}`);
         if (mode === 'tick') assert.ok(q.tick <= L.maxTick);
         if (mode === 'unreach') assert.ok(q.grid.isBlocked(q.target.x, q.target.y));
