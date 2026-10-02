@@ -44,6 +44,7 @@
     terrain: TERRAIN_NAME[saved.terrain] ? saved.terrain : 'any',
     size: [12, 16, 20].includes(saved.size) ? saved.size : 16,
     run: saved.run !== false,
+    level: [1, 2, 3].includes(saved.level) ? saved.level : 1,
     overlay: OVERLAYS.includes(saved.overlay) ? saved.overlay : 'none',
     stats: saved.stats || {},
     misses: Array.isArray(saved.misses) ? saved.misses : [],
@@ -63,7 +64,7 @@
     const sb = st.sb;
     try {
       localStorage.setItem(STORE, JSON.stringify({
-        mode: st.mode, terrain: st.terrain, size: st.size, run: st.run, overlay: st.overlay,
+        mode: st.mode, level: st.level, terrain: st.terrain, size: st.size, run: st.run, overlay: st.overlay,
         stats: st.stats, misses: st.misses,
         sandbox: sb.grid ? { grid: sb.grid.toJSON(), src: sb.src, npc: sb.npc } : null,
       }));
@@ -82,7 +83,7 @@
   }
 
   // Wrong answers are kept (by seed) for the Misses mode; a right answer removes them.
-  const specKey = (s) => `${s.mode}|${s.terrain}|${s.size}|${s.run}|${s.seed}`;
+  const specKey = (s) => `${s.mode}|${s.level || 3}|${s.terrain}|${s.size}|${s.run}|${s.seed}`;
   function noteResult(q, ok) {
     const k = specKey(q.spec), i = st.misses.findIndex((s) => specKey(s) === k);
     if (ok) { if (i >= 0) st.misses.splice(i, 1); return; }
@@ -110,7 +111,7 @@
       if (!st.misses.length) return render();
       spec = Object.assign({}, st.misses[0]);
     } else {
-      spec = { mode: st.mode === 'mixed' ? pickWeakMode() : st.mode, terrain: st.terrain, size: st.size, run: st.run, seed: 0 };
+      spec = { mode: st.mode === 'mixed' ? pickWeakMode() : st.mode, level: st.level, terrain: st.terrain, size: st.size, run: st.run, seed: 0 };
     }
     let q = null;
     for (let tries = 0; !q && tries < (replaying ? 1 : 6); tries++) {
@@ -297,6 +298,14 @@
 
   // ---- panels -----------------------------------------------------------------------------
 
+  // Shown on Beginner and Easy questions.
+  const HINT = {
+    trace: "you always take the fewest steps, and a diagonal step counts as one. With nothing in the way you do the straight part first and the diagonal steps last. You can't cut a corner past a rock.",
+    tick: "work out the route first, then count along it. Running covers 2 tiles per tick (tick 1 ends 2 steps in, tick 2 ends 4 steps in). Walking covers 1.",
+    unreach: "you walk to the reachable tile closest to the X in a straight line. A tile straight beside the rock beats a diagonal one. If two tie, the one with fewer steps wins, then the westmost.",
+    melee: "you stop on the nearest tile that shares an edge with the NPC. Corners don't count. If two are equally close and you're diagonal to the NPC, you step west or east rather than south or north.",
+  };
+
   function promptHTML(q) {
     const ask = st.phase === 'ask';
     let title, text;
@@ -313,10 +322,12 @@
       title = 'Melee approach';
       text = `You click <b>Attack</b> on the <b class="r">${q.target.w}×${q.target.h} NPC</b> with a melee weapon. Click the tile you'll stop on.`;
     }
-    const hint = q.mode === 'trace' && ask ? '<p class="hint">Backspace or right-click undoes a step. Enter submits early.</p>' : '';
+    const hint = (q.mode === 'trace' && ask ? '<p class="hint">Backspace or right-click undoes a step. Enter submits early.</p>' : '') +
+      (q.level < 3 ? `<p class="tip"><b>Rule:</b> ${HINT[q.mode]}</p>` : '');
     const btns = ask ? `<div class="row">${q.mode === 'trace' ? '<button data-act="undo">Undo</button><button data-act="submit">Submit</button>' : ''}<button data-act="reveal">Show answer</button><button data-act="skip">Skip <kbd>N</kbd></button></div>` : '';
     const label = st.mode === 'mixed' || st.mode === 'misses' ? `${NAME[q.mode]} · ` : '';
-    return `<h2>${title}</h2><p>${text}</p>${hint}${btns}<p class="meta">${label}${TERRAIN_NAME[q.terrain]} · ${q.size}×${q.size} · seed ${q.seed}</p>`;
+    const where = q.level < 3 ? S.LEVELS[q.level].name : TERRAIN_NAME[q.terrain];
+    return `<h2>${title}</h2><p>${text}</p>${hint}${btns}<p class="meta">${label}${where} · ${q.size}×${q.size} · seed ${q.seed}</p>`;
   }
 
   function resultHTML(q, v) {
@@ -378,6 +389,11 @@
       if (q && st.phase === 'done') { rc.innerHTML = resultHTML(q, st.verdict); rc.classList.remove('hidden'); }
       else rc.classList.add('hidden');
       $('statsCard').innerHTML = statsHTML();
+    }
+    const simple = !sandbox && st.level < 3;
+    for (const id of ['terrain', 'size']) {
+      $(id).disabled = simple;
+      $(id).title = simple ? 'Beginner and Easy use their own small maps. Switch Level to Normal to choose.' : '';
     }
     $('overlay').value = st.overlay;
     $('overlay').disabled = !sandbox && st.phase !== 'done';
@@ -946,6 +962,12 @@
 
   function showRules(on) { $('rules').classList.toggle('hidden', !on); }
 
+  $('level').addEventListener('change', (e) => {
+    st.level = +e.target.value;
+    e.target.blur();
+    persist();
+    if (st.mode !== 'sandbox' && st.mode !== 'misses') nextQuestion(); else render();
+  });
   $('terrain').addEventListener('change', (e) => {
     st.terrain = e.target.value;
     e.target.blur();
@@ -991,6 +1013,7 @@
 
   // ---- boot -------------------------------------------------------------------------------
 
+  $('level').value = String(st.level);
   $('terrain').value = st.terrain;
   $('size').value = String(st.size);
   $('run').checked = st.run;

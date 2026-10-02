@@ -12,6 +12,26 @@
 
   const TERRAINS = ['pillars', 'rocks', 'walls', 'rooms', 'mixed'];
 
+  // Difficulty levels. Lengths are route steps; `filter` turns on the "make it interesting" rejections
+  // (tie-breaks, obstacle-shaped routes) that Normal uses.
+  const LEVELS = {
+    1: {
+      name: 'Beginner', size: 10, terrains: ['sparse'], filter: false,
+      trace: [2, 4], tick: [3, 6], maxTick: 2, unreach: [1, 4], unreachGap: 2, blockedOnly: true,
+      melee: [1, 3], npcSizes: [1, 1, 2], corner: 0.3,
+    },
+    2: {
+      name: 'Easy', size: 12, terrains: ['light'], filter: false,
+      trace: [3, 7], tick: [4, 10], maxTick: 3, unreach: [2, 8], unreachGap: 2, blockedOnly: true,
+      melee: [1, 6], npcSizes: [1, 1, 2, 2, 3], corner: 0.2,
+    },
+    3: {
+      name: 'Normal', size: 0, terrains: null, filter: true,
+      trace: [4, 12], tick: [5, 16], maxTick: 0, unreach: [2, 14], unreachGap: 3, blockedOnly: false,
+      melee: [2, 14], npcSizes: [1, 1, 1, 2, 2, 3, 3, 3, 4, 5], corner: 0.15,
+    },
+  };
+
   function makeRng(seed) {
     let a = seed >>> 0;
     const next = () => {
@@ -39,9 +59,10 @@
     return true;
   }
 
-  function pillars(g, rng, count) {
+  function pillars(g, rng, count, sizes) {
+    sizes = sizes || [1, 2, 2, 3, 3, 3];
     for (let tries = 0, placed = 0; placed < count && tries < count * 40; tries++) {
-      const s = rng.pick([1, 2, 2, 3, 3, 3]);
+      const s = rng.pick(sizes);
       const w = rng.chance(0.3) ? Math.max(1, s + rng.pick([-1, 1])) : s;
       const x = rng.int(0, g.w - w), y = rng.int(0, g.h - s);
       const pad = rng.chance(0.2) ? 0 : 1;
@@ -101,7 +122,9 @@
     const g = new E.Grid(size, size);
     const k = (size * size) / 256;
     const n = (lo, hi) => Math.max(1, Math.round(k * rng.int(lo, hi)));
-    if (style === 'pillars') pillars(g, rng, n(4, 7));
+    if (style === 'sparse') pillars(g, rng, rng.int(1, 3), [1, 1, 2]);
+    else if (style === 'light') { pillars(g, rng, n(3, 4), [1, 2, 2, 3]); rocks(g, rng, 0.03); }
+    else if (style === 'pillars') pillars(g, rng, n(4, 7));
     else if (style === 'rocks') rocks(g, rng, 0.08 + rng.next() * 0.08);
     else if (style === 'walls') { fences(g, rng, n(5, 8)); rocks(g, rng, 0.02); }
     else if (style === 'rooms') { rooms(g, rng, n(1, 2)); pillars(g, rng, n(1, 3)); rocks(g, rng, 0.02); }
@@ -142,25 +165,25 @@
     return { grid: g, src, target, result: res };
   }
 
-  function genTrace(rng, g, opts, strict) {
-    return walkQuestion(rng, g, 4, 12, 0.25, strict);
+  function genTrace(rng, g, opts, strict, L) {
+    return walkQuestion(rng, g, L.trace[0], L.trace[1], 0.25, strict && L.filter);
   }
 
-  function genTick(rng, g, opts, strict) {
-    const q = walkQuestion(rng, g, 5, 16, 0.35, strict);
+  function genTick(rng, g, opts, strict, L) {
+    const q = walkQuestion(rng, g, L.tick[0], L.tick[1], 0.35, strict && L.filter);
     if (!q) return null;
     const stops = E.tickStops(q.result.tiles, !!opts.run);
     if (stops.length < 2) return null;
-    q.tick = rng.int(1, stops.length - 1);
+    q.tick = rng.int(1, L.maxTick ? Math.min(L.maxTick, stops.length - 1) : stops.length - 1);
     q.answer = { x: stops[q.tick - 1].x, y: stops[q.tick - 1].y };
     return q;
   }
 
-  function genUnreach(rng, g, opts, strict) {
+  function genUnreach(rng, g, opts, strict, L) {
     const src = freeTile(g, rng);
     if (!src) return null;
     let dst = null;
-    if (rng.chance(0.55)) {
+    if (L.blockedOnly || rng.chance(0.55)) {
       for (let t = 0; t < 60 && !dst; t++) {
         const x = rng.int(0, g.w - 1), y = rng.int(0, g.h - 1);
         if (g.isBlocked(x, y)) dst = { x, y };
@@ -169,20 +192,20 @@
       const s = E.search(g, src.x, src.y, null);
       dst = freeTile(g, rng, (x, y) => s.dist[g.idx(x, y)] < 0);
     }
-    if (!dst || Math.max(Math.abs(dst.x - src.x), Math.abs(dst.y - src.y)) < 3) return null;
+    if (!dst || Math.max(Math.abs(dst.x - src.x), Math.abs(dst.y - src.y)) < L.unreachGap) return null;
     const target = { x: dst.x, y: dst.y, w: 1, h: 1, kind: 'tile' };
     const res = E.findPath(g, src, target);
     if (!res.alternative || res.truncated) return null;
     const len = res.tiles.length - 1;
-    if (len < 2 || len > 14) return null;
+    if (len < L.unreach[0] || len > L.unreach[1]) return null;
     const best = res.approach.best;
     const ties = res.approach.candidates.filter((c) => c.cost === best.cost).length;
-    if (strict && ties < 2 && !rng.chance(0.3)) return null;
+    if (strict && L.filter && ties < 2 && !rng.chance(0.3)) return null;
     return { grid: g, src, target, result: res };
   }
 
-  function genMelee(rng, g, opts, strict) {
-    const size = rng.pick([1, 1, 1, 2, 2, 3, 3, 3, 4, 5]);
+  function genMelee(rng, g, opts, strict, L) {
+    const size = rng.pick(L.npcSizes);
     if (size + 2 > g.w) return null;
     const nx = rng.int(1, g.w - size - 1), ny = rng.int(1, g.h - size - 1);
     for (let j = 0; j < size; j++) {
@@ -195,7 +218,7 @@
     const npc = { x: nx, y: ny, w: size, h: size, kind: 'npc' };
     const gap = (x, y) => Math.max(nx - x, x - (nx + size - 1), ny - y, y - (ny + size - 1));
     // Sometimes start on a diagonal corner: the "which way do I step?" case.
-    const corner = rng.chance(0.15);
+    const corner = rng.chance(L.corner);
     let src;
     if (corner) {
       const c = rng.pick([[nx - 1, ny - 1], [nx + size, ny - 1], [nx - 1, ny + size], [nx + size, ny + size]]);
@@ -207,31 +230,33 @@
     const res = E.findPath(g, src, npc);
     if (!res.reached || res.truncated) return null;
     const len = res.tiles.length - 1;
-    if (len < (corner ? 1 : 2) || len > 14) return null;
+    if (len < (corner ? 1 : L.melee[0]) || len > L.melee[1]) return null;
     const cands = E.meleeCandidates(g, res);
     const ties = cands.filter((c) => c.dist === cands[0].dist).length;
-    if (strict && !corner && ties < 2 && !rng.chance(0.35)) return null;
+    if (strict && L.filter && !corner && ties < 2 && !rng.chance(0.35)) return null;
     return { grid: g, src, target: npc, result: res };
   }
 
   const GENERATORS = { trace: genTrace, tick: genTick, unreach: genUnreach, melee: genMelee };
 
-  // opts: { terrain: 'any' | one of TERRAINS, size, run, seed }
+  // opts: { level: 1-3 (default 3), terrain: 'any' | one of TERRAINS, size, run, seed }.
+  // Beginner and Easy pick their own grid size and terrain.
   function generate(mode, opts) {
     const rng = makeRng(opts.seed >>> 0);
-    const size = opts.size || 16;
+    const level = LEVELS[opts.level] ? opts.level : 3, L = LEVELS[level];
+    const size = L.size || opts.size || 16;
     const gen = GENERATORS[mode];
     let grid = null, style = null;
     for (let attempt = 0; attempt < 1500; attempt++) {
       if (attempt % 20 === 0) {
-        style = !opts.terrain || opts.terrain === 'any' ? rng.pick(TERRAINS) : opts.terrain;
+        style = L.terrains ? rng.pick(L.terrains) : !opts.terrain || opts.terrain === 'any' ? rng.pick(TERRAINS) : opts.terrain;
         grid = genTerrain(rng, size, style);
       }
-      const q = gen(rng, grid, opts, attempt < 1000);
-      if (q) return Object.assign(q, { mode, seed: opts.seed >>> 0, size, terrain: style, run: !!opts.run });
+      const q = gen(rng, grid, opts, attempt < 1000, L);
+      if (q) return Object.assign(q, { mode, level, seed: opts.seed >>> 0, size, terrain: style, run: !!opts.run });
     }
     return null;
   }
 
-  return { TERRAINS, makeRng, genTerrain, generate };
+  return { TERRAINS, LEVELS, makeRng, genTerrain, generate };
 });

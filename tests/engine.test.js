@@ -256,4 +256,24 @@ test('scenario generator produces every mode deterministically', () => {
   }
 });
 
+test('Beginner and Easy levels stay small and short', () => {
+  for (const level of [1, 2]) {
+    const L = S.LEVELS[level];
+    for (const mode of ['trace', 'tick', 'unreach', 'melee']) {
+      for (let seed = 1; seed <= 40; seed++) {
+        const q = S.generate(mode, { level, size: 20, terrain: 'walls', run: true, seed });
+        assert.ok(q, `${level}/${mode}/${seed}`);
+        assert.strictEqual(q.size, L.size);
+        assert.strictEqual(q.grid.wallE.some(Boolean) || q.grid.wallN.some(Boolean), false, 'no walls');
+        const steps = q.result.tiles.length - 1;
+        const [lo, hi] = L[mode];
+        assert.ok(steps <= hi && (steps >= lo || mode === 'melee'), `${level}/${mode} steps ${steps}`);
+        if (mode === 'tick') assert.ok(q.tick <= L.maxTick);
+        if (mode === 'unreach') assert.ok(q.grid.isBlocked(q.target.x, q.target.y));
+        if (mode === 'melee') assert.ok(L.npcSizes.includes(q.target.w));
+      }
+    }
+  }
+});
+
 console.log(`${passed} tests passed` + (process.exitCode ? ' (with failures above)' : ''));
