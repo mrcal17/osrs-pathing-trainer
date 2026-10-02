@@ -58,8 +58,10 @@
     dg: { grid: null, pos: null, npcs: [], route: [], pending: null, seg: null, dest: null, click: null,
       tick: 0, tickAt: 0, timer: 0, raf: 0, showPath: true, last: null, hazards: true,
       hp: 99, hits: 0, splats: [], wave: 0, nextWave: 3, dead: false, paused: false, hitFx: null,
-      showStops: true, strict: false, best: saved.dodgeBest || 0, rng: null,
-      style: saved.dodgeStyle === 'survival' ? 'survival' : 'puzzle', preview: false, puzzle: null, trail: [],
+      showStops: true, strict: saved.dodgeStyleV2 ? !!saved.dodgeStrict : true, best: saved.dodgeBest || 0, rng: null,
+      style: ['acid', 'puzzle', 'survival'].includes(saved.dodgeStyleV2) ? saved.dodgeStyleV2 : 'acid',
+      preview: false, puzzle: null, trail: [], acid: null, boss: null, acidAmount: saved.acidAmount || 'medium',
+      ac: saved.acidStats || { n: 0, clean: 0, best: 0, streak: 0 },
       pz: saved.dodgePuzzle || { n: 0, ok: 0, streak: 0, best: 0 } },
     sb: { grid: null, src: null, npc: null, goal: null, res: null, search: null, tool: 'walk', npcSize: 2, paint: null },
   };
@@ -75,7 +77,7 @@
     const sb = st.sb;
     try {
       localStorage.setItem(STORE, JSON.stringify({
-        mode: st.mode, dodgeBest: st.dg.best, dodgeStyle: st.dg.style, dodgePuzzle: st.dg.pz, level: st.level, terrain: st.terrain, size: st.size, run: st.run, overlay: st.overlay,
+        mode: st.mode, dodgeStrict: st.dg.strict, dodgeBest: st.dg.best, dodgeStyleV2: st.dg.style, dodgePuzzle: st.dg.pz, acidAmount: st.dg.acidAmount, acidStats: st.dg.ac, level: st.level, terrain: st.terrain, size: st.size, run: st.run, overlay: st.overlay,
         stats: st.stats, misses: st.misses,
         sandbox: sb.grid ? { grid: sb.grid.toJSON(), src: sb.src, npc: sb.npc } : null,
       }));
@@ -652,6 +654,7 @@
     ex.tick++;
     ex.tickAt = performance.now();
     if (ex.pending) {
+      if (ex.acid && !ex.acid.done) ex.acid.clicks++;
       const res = E.findPath(ex.grid, ex.pos, ex.pending);
       ex.route = res.tiles.slice(1);
       ex.dest = ex.route.length ? res.end : null;
@@ -669,7 +672,7 @@
 
   function exploreClick(t) {
     const ex = roam(), tile = { x: t.x, y: t.y };
-    if (ex.dead) return;
+    if (ex.dead || (ex.acid && ex.acid.done)) return;
     if (ex.hazards && ex.style === 'puzzle') {
       const pz = ex.puzzle;
       if (!pz || pz.clicked || pz.done) return;
@@ -717,6 +720,7 @@
     if (ex.hazards) drawSplats(g, ex);
     drawRocks(g);
     drawWalls(g);
+    if (ex.hazards && ex.style === 'acid') drawAcidExtras(g, ex);
     ex.npcs.forEach((n) => drawNpc(g, n));
     if (ex.showPath && ex.route.length) {
       ctx.save();
@@ -797,7 +801,47 @@
     freshDodgeMap(dg);
     Object.assign(dg, { tick: 0, hp: 99, hits: 0, wave: 0, nextWave: 2, dead: false, paused: false, puzzle: null });
     if (dg.style === 'puzzle') nextPuzzle();
+    else if (dg.style === 'acid') nextAcid();
     else renderDodgeInfo();
+  }
+
+  // ---- acid floor: Doom-style persistent acid around a 5x5 boss --------------------------------
+
+  function nextAcid() {
+    const dg = st.dg, rng = S.makeRng((Math.random() * 4294967296) >>> 0);
+    const P = S.acidPuzzle(rng, { run: st.run, strict: dg.strict, amount: dg.acidAmount });
+    dg.rng = rng;
+    Object.assign(dg, { npcs: [], route: [], pending: null, seg: null, dest: null, click: null, last: null, trail: [], hitFx: null, puzzle: null, paused: false });
+    if (!P) { dg.acid = null; renderDodgeInfo(); return; }
+    dg.grid = P.grid;
+    dg.pos = P.start;
+    dg.boss = P.boss;
+    dg.splats = P.acid.map((a) => ({ x: a.x, y: a.y, kind: 'acid', land: -1e9, until: 1e9 }));
+    dg.acid = { target: P.target, start: P.start, best: P.solution, direct: P.direct, clicks: 0, touched: 0, done: false };
+    renderDodgeInfo();
+  }
+
+  function acidTick(dg, seg) {
+    const a = dg.acid;
+    if (!a || a.done) return;
+    const checked = dg.strict && seg.length > 1 ? seg.slice(1) : [dg.pos];
+    let n = 0;
+    for (const c of checked) if (poolAt(dg, c.x, c.y, dg.tick)) n++;
+    if (n) {
+      a.touched += n;
+      dg.hitFx = { at: performance.now(), dmg: Math.min(7 * n, dg.rng.int(n, 7 * n)) };
+    }
+    for (const c of seg.slice(1)) dg.trail.push({ x: c.x, y: c.y, hit: poolAt(dg, c.x, c.y, dg.tick) && (dg.strict || same(c, dg.pos)) });
+    if (same(dg.pos, a.target) && !dg.route.length && !dg.pending) {
+      a.done = true;
+      const s = dg.ac, clean = a.touched === 0, par = clean && a.clicks <= a.best.clicks;
+      s.n++;
+      if (clean) s.clean++;
+      if (par) { s.streak++; s.best = Math.max(s.best, s.streak); } else s.streak = 0;
+      a.par = par;
+      persist();
+    }
+    renderDodgeInfo();
   }
 
   // Lay a wave down relative to the current tick. delay = extra warning ticks; clickTick = the tick
@@ -825,6 +869,7 @@
   const poolAt = (dg, x, y, tick) => dg.splats.some((s) => s.x === x && s.y === y && s.land <= tick && tick < s.until);
 
   function dodgeTick(dg, seg) {
+    if (dg.style === 'acid') return acidTick(dg, seg);
     const t = dg.tick, pz = dg.puzzle;
     const checked = dg.strict && seg.length > 1 ? seg.slice(1) : [dg.pos];
     let dmg = 0, at = null;
@@ -870,7 +915,21 @@
   function renderDodgeInfo() {
     const dg = st.dg, pz = dg.puzzle;
     let h = '';
-    if (dg.style === 'puzzle') {
+    $('dgAbout').innerHTML = DODGE_ABOUT[dg.style];
+    $('acidAmountRow').classList.toggle('hidden', dg.style !== 'acid');
+    if (dg.style === 'acid') {
+      const a = dg.acid, s = dg.ac;
+      h += `<p class="meta">Clean ${s.clean}/${s.n} · at best click count ${s.streak} in a row (best ${s.best})</p>`;
+      if (!a) h += "<p>Couldn't build a puzzle. Press Next.</p>";
+      else if (!a.done) {
+        h += `<p>Get to the <b class="y">flag</b> without touching acid. Clicks so far: <b>${a.clicks}</b>${a.touched ? ` · <span class="r">acid touched ${a.touched}×</span>` : ''}.</p>`;
+      } else {
+        h += a.touched === 0 ? `<p class="verdict ok">✓ Clean in ${plural(a.clicks, 'click')}</p>` : `<p class="verdict bad">✗ Touched acid ${a.touched}×</p>`;
+        h += `<p>Fewest clicks for a clean run: <b>${a.best.clicks}</b>${a.touched === 0 && a.clicks > a.best.clicks ? ` (you used ${a.clicks})` : ''}. The gold numbers show one way to do it.</p>`;
+        if (a.best.plan.some((s) => !same(s.click, s.stop))) h += '<p class="hint">A gold step with a dashed ring means re-clicking mid-run: click the next tile on the tick you reach the ring.</p>';
+        h += `<p class="hint">Clicking the flag straight away would have dragged you through ${plural(a.direct.length, 'acid tile')}. Press Enter or Next for another.</p>`;
+      }
+    } else if (dg.style === 'puzzle') {
       const s = dg.pz;
       h += `<p class="meta">Solved ${s.ok}/${s.n} · streak ${s.streak} · best streak ${s.best}</p>`;
       if (!pz) h += "<p>Couldn't build a puzzle on this map. Press Next.</p>";
@@ -893,10 +952,91 @@
       if (dg.dead) h += `<p class="verdict bad">You died on tick ${dg.tick} after ${plural(dg.wave, 'wave')}.</p><p class="hint">Press Enter or Restart to go again.</p>`;
     }
     $('dgHud').innerHTML = h;
-    $('dgPause').classList.toggle('hidden', dg.style === 'puzzle');
+    $('dgPause').classList.toggle('hidden', dg.style !== 'survival');
     $('dgPause').textContent = dg.paused ? 'Resume' : 'Pause';
-    $('dgRestart').textContent = dg.style === 'puzzle' ? 'Next puzzle' : 'Restart';
+    $('dgRestart').textContent = dg.style === 'survival' ? 'Restart' : 'Next puzzle';
+    $('dgStrict').checked = dg.strict;
+    $('acidAmount').value = dg.acidAmount;
     $('dgStyle').value = dg.style;
+  }
+
+  const DODGE_ABOUT = {
+    acid: `<p>Doom of Mokhaiotl style: each time the boss is hit it sprays acid on one side, up to 5 tiles out, and
+      the acid never goes away. The pathfinder ignores acid, so clicking where you want to go often runs you
+      straight through it. Get to the flag clean, in as few clicks as you can. Clicks are picked up on the next tick
+      and you can re-click mid-run.</p>
+      <p class="hint">By default every tile you step on counts, like Vorkath's acid (“standing on or running over”).
+      The wiki doesn't confirm whether Doom's acid hurts when you only run over it, so you can switch that off below.
+      Here the boss blocks movement, which is also an assumption.</p>`,
+    puzzle: `<p>Solid green pools hurt from the moment you can reach them. Dashed splats show the tick they land on (a
+      closing gap). A pool hits you only if a tick <b>ends</b> with you standing on it, so tiles you run over
+      mid-tick are safe.</p>
+      <p class="hint">You get one click with the clock stopped. Every wave has a way across, and the obvious pick (the nearest
+      tile no splat lands on) is always a trap.</p>`,
+    survival: `<p>Same waves as Puzzle, in real time with two extra ticks of warning. A pool hits you only if a tick
+      <b>ends</b> with you standing on it. <kbd>Space</kbd> pauses.</p>`,
+  };
+
+  function drawAcidExtras(g, dg) {
+    const ts = st.ts, a = dg.acid;
+    if (dg.boss) {
+      const b = dg.boss, x = px(b.x), y = py(b.y + b.h - 1, g);
+      ctx.fillStyle = '#3a1d1d';
+      ctx.fillRect(x, y, b.w * ts, b.h * ts);
+      ctx.strokeStyle = '#a33';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(x + 1, y + 1, b.w * ts - 2, b.h * ts - 2);
+      ctx.fillStyle = '#e88';
+      ctx.font = `700 ${Math.max(11, Math.round(ts * 0.45))}px system-ui, sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('Doom', x + (b.w * ts) / 2, y + (b.h * ts) / 2);
+    }
+    if (!a) return;
+    // Flag on the target tile.
+    const fx = px(a.target.x), fy = py(a.target.y, g);
+    ctx.strokeStyle = '#111';
+    ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.moveTo(fx + ts * 0.3, fy + ts * 0.85); ctx.lineTo(fx + ts * 0.3, fy + ts * 0.15); ctx.stroke();
+    ctx.fillStyle = C.target;
+    ctx.beginPath(); ctx.moveTo(fx + ts * 0.32, fy + ts * 0.15); ctx.lineTo(fx + ts * 0.82, fy + ts * 0.32); ctx.lineTo(fx + ts * 0.32, fy + ts * 0.5); ctx.fill();
+    // Your trail: red where you touched acid.
+    for (const s of dg.trail) {
+      circle(cx(s.x), cy(s.y, g), ts * 0.1);
+      ctx.fillStyle = s.hit ? C.bad : 'rgba(122,167,255,0.9)';
+      ctx.fill();
+    }
+    if (!a.done) return;
+    // A best clean plan: numbered clicks, its route, and dashed rings where you re-click mid-run.
+    let from = a.start;
+    ctx.font = `800 ${Math.max(10, Math.round(ts * 0.32))}px system-ui, sans-serif`;
+    a.best.plan.forEach((s, k) => {
+      const r = E.findPath(g, from, { x: s.click.x, y: s.click.y }).tiles;
+      const upto = r.findIndex((t) => same(t, s.stop));
+      ctx.save();
+      ctx.setLineDash([6, 4]);
+      ctx.strokeStyle = 'rgba(255,216,74,0.85)';
+      ctx.lineWidth = Math.max(2, ts * 0.07);
+      polyline(g, r.slice(0, upto + 1));
+      ctx.restore();
+      if (!same(s.click, s.stop)) {
+        ctx.save();
+        ctx.setLineDash([3, 3]);
+        ctx.strokeStyle = C.target;
+        ctx.lineWidth = 2;
+        circle(cx(s.stop.x), cy(s.stop.y, g), ts * 0.4);
+        ctx.stroke();
+        ctx.restore();
+      }
+      circle(cx(s.click.x), cy(s.click.y, g), ts * 0.24);
+      ctx.fillStyle = C.target;
+      ctx.fill();
+      ctx.fillStyle = '#1a1606';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(String(k + 1), cx(s.click.x), cy(s.click.y, g) + 1);
+      from = s.stop;
+    });
   }
 
   function drawSplats(g, dg) {
@@ -909,6 +1049,14 @@
     for (const s of dg.splats) {
       if (now >= s.until) continue;
       const x = cx(s.x), y = cy(s.y, g);
+      if (s.kind === 'acid') {
+        ctx.fillStyle = 'rgba(170,215,30,0.55)';
+        ctx.fillRect(px(s.x) + 2, py(s.y, g) + 2, ts - 4, ts - 4);
+        ctx.fillStyle = 'rgba(120,170,10,0.8)';
+        circle(x - ts * 0.15, y + ts * 0.1, ts * 0.13); ctx.fill();
+        circle(x + ts * 0.12, y - ts * 0.12, ts * 0.1); ctx.fill();
+        continue;
+      }
       if (s.kind === 'field' || now >= s.land) {
         ctx.fillStyle = 'rgba(70,190,40,0.6)';
         circle(x, y, ts * 0.42); ctx.fill();
@@ -948,6 +1096,26 @@
   }
 
   function drawTickStops(g, dg) {
+    if (dg.style === 'acid') {
+      let tiles = [dg.pos].concat(dg.route);
+      const h = st.hover;
+      if (dg.preview && h && !dg.grid.isBlocked(h.x, h.y) && dg.acid && !dg.acid.done) {
+        tiles = E.findPath(dg.grid, dg.pos, { x: h.x, y: h.y }).tiles;
+        ctx.save();
+        ctx.setLineDash([5, 5]);
+        ctx.strokeStyle = 'rgba(255,255,255,0.6)';
+        ctx.lineWidth = Math.max(2, st.ts * 0.06);
+        polyline(g, tiles);
+        ctx.restore();
+      }
+      if (tiles.length < 2) return;
+      for (const c of S.acidTouches(tiles, (x, y) => poolAt(dg, x, y, dg.tick), st.run, dg.strict)) {
+        ctx.strokeStyle = C.bad;
+        ctx.lineWidth = 3;
+        ctx.strokeRect(px(c.x) + 3, py(c.y, g) + 3, st.ts - 6, st.ts - 6);
+      }
+      return;
+    }
     const pz = dg.puzzle;
     if (pz && !pz.clicked) {
       if (dg.preview && st.hover && !dg.grid.isBlocked(st.hover.x, st.hover.y)) {
@@ -1022,7 +1190,10 @@
   // Run and strict change which clicks work, so rebuild a puzzle that hasn't been clicked yet.
   function dodgeSettingChanged() {
     const dg = st.dg;
-    if (st.mode === 'dodge' && dg.style === 'puzzle' && dg.puzzle && !dg.puzzle.clicked) nextPuzzle();
+    persist();
+    if (st.mode !== 'dodge') return;
+    if (dg.style === 'puzzle' && dg.puzzle && !dg.puzzle.clicked) nextPuzzle();
+    if (dg.style === 'acid' && (!dg.acid || (!dg.acid.clicks && !dg.pending) || dg.acid.done)) nextAcid();
   }
 
   // ---- settings and modes -----------------------------------------------------------------
@@ -1493,7 +1664,14 @@
   $('dgStops').addEventListener('change', (e) => { st.dg.showStops = e.target.checked; e.target.blur(); });
   $('dgStrict').addEventListener('change', (e) => { st.dg.strict = e.target.checked; e.target.blur(); dodgeSettingChanged(); });
   $('dgPreview').addEventListener('change', (e) => { st.dg.preview = e.target.checked; e.target.blur(); });
-  $('dgStyle').addEventListener('change', (e) => { st.dg.style = e.target.value; e.target.blur(); persist(); restartDodge(); });
+  $('acidAmount').addEventListener('change', (e) => { st.dg.acidAmount = e.target.value; e.target.blur(); dodgeSettingChanged(); });
+  $('dgStyle').addEventListener('change', (e) => {
+    st.dg.style = e.target.value;
+    st.dg.strict = st.dg.style === 'acid'; // each style's default hit rule
+    e.target.blur();
+    persist();
+    restartDodge();
+  });
   $('npcSize').addEventListener('change', (e) => { st.sb.npcSize = +e.target.value; e.target.blur(); });
 
   document.addEventListener('keydown', (e) => {
@@ -1508,8 +1686,10 @@
     if (low === 'a') return replay();
     if (st.mode === 'dodge') {
       if (k === ' ' || low === 'p') { e.preventDefault(); toggleDodgePause(); }
-      else if (k === 'Enter' && (st.dg.dead || (st.dg.puzzle && st.dg.puzzle.done))) {
-        if (st.dg.style === 'puzzle') { nextPuzzle(); render(); } else restartDodge();
+      else if (k === 'Enter' && (st.dg.dead || (st.dg.puzzle && st.dg.puzzle.done) || (st.dg.acid && st.dg.acid.done))) {
+        if (st.dg.style === 'puzzle') { nextPuzzle(); render(); }
+        else if (st.dg.style === 'acid') { nextAcid(); render(); }
+        else restartDodge();
       }
       return;
     }

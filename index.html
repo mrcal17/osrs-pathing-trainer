@@ -84,25 +84,28 @@
 
     <section class="card hidden" id="dodgePanel">
       <div class="row spread"><h2>Dodge</h2>
-        <label>Style <select id="dgStyle"><option value="puzzle">Puzzle: one click</option><option value="survival">Survival: real time</option></select></label>
+        <label>Style <select id="dgStyle">
+          <option value="acid">Acid floor (Doom)</option>
+          <option value="puzzle">Splat puzzle: one click</option>
+          <option value="survival">Splat survival: real time</option>
+        </select></label>
       </div>
-      <p>Solid green pools hurt from the moment you can reach them. Dashed splats show the tick they land on (a
-        closing gap). A pool hits you only if a tick <b>ends</b> with you standing on it, so tiles you run over
-        mid-tick are safe.</p>
-      <p class="hint">Splats don't block the pathfinder: the game routes you straight through them. Every wave has a
-        way across, and the obvious pick (the nearest tile no splat lands on) is always a trap. Work out where your
-        tick stops will fall on the game's route.</p>
+      <div id="dgAbout"></div>
+      <div class="row" id="acidAmountRow">
+        <label>Acid <select id="acidAmount"><option value="light">Light</option><option value="medium">Medium</option><option value="heavy">Heavy</option></select></label>
+      </div>
       <div id="dgHud"></div>
       <div class="row">
         <button data-act="dgRestart" id="dgRestart">Next puzzle</button>
         <button data-act="dgPause" id="dgPause">Pause</button>
       </div>
       <div class="row">
-        <label class="check"><input type="checkbox" id="dgStops" checked> Show tick stops while moving</label>
+        <label class="check"><input type="checkbox" id="dgStops" checked> Show route warnings</label>
         <label class="check"><input type="checkbox" id="dgPreview"> Hover preview (gives it away)</label>
         <label class="check"><input type="checkbox" id="dgStrict"> Every tile stepped on counts</label>
       </div>
-      <p class="meta">A general floor-hazard drill, not a copy of any one boss's patterns or timings.</p>
+      <p class="meta">Acid floor follows the OSRS wiki's description of Doom's acid blood. The splat styles are a general
+        floor-hazard drill, not any one boss's patterns.</p>
     </section>
 
     <section class="card small" id="hover">&nbsp;</section>
@@ -164,7 +167,9 @@
       <li><b>Misses</b>: replays questions you got wrong. Get one right and it drops off the list.</li>
       <li><b>Sandbox</b>: build your own maps and click around. The <i>Steps</i> and <i>Search order</i> overlays
         show the search itself.</li>
-      <li><b>Dodge</b>: cross a band of poison pools and closing gaps. Pools only hurt if a tick ends with you on one,
+      <li><b>Dodge, Acid floor</b>: Doom-style permanent acid around the boss. The pathfinder walks you through it,
+        so reach the flag clean by choosing in-between clicks (and mid-run re-clicks) in as few clicks as possible.</li>
+      <li><b>Dodge, splat styles</b>: cross a band of poison pools and closing gaps. Pools only hurt if a tick ends with you on one,
         so running over a pool mid-tick is fine. Splats don't block the pathfinder, so you have to pick a click whose
         tick stops land on open gaps. Puzzle style stops the clock and gives you one click; Survival runs in real time.</li>
       <li><b>Explore</b>: free roam. Click around and the character runs on real 0.6s ticks, routing from its true tile.</li>

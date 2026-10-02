@@ -346,6 +346,109 @@
     return null;
   }
 
+  // ---- acid floor (Doom of Mokhaiotl style) -------------------------------------------------
+  // Per the OSRS wiki: each hit on the Doom sprays acid in one random cardinal direction, up to 5
+  // tiles out, and the acid stays. The pathfinder ignores it. Here the 5x5 boss blocks movement
+  // (an assumption) and a few leftover rocks block too.
+
+  const ACID_SIZE = 19, ACID_HITS = { light: [8, 2, 3], medium: [16, 2, 3], heavy: [24, 3, 4] };
+
+  // Clean tiles you can end a tick on after one click from `from`: every tick stop along the game's
+  // route to every clicked tile, up to the first acid touch (strict: any route tile; else stops only).
+  // Each keeps the fastest way there (fewest ticks), preferring arriving over a mid-run stop.
+  function acidMoves(grid, isAcid, from, run, strict) {
+    const s = E.search(grid, from.x, from.y, null), step = run ? 2 : 1, out = new Map();
+    for (let c = 0; c < grid.w * grid.h; c++) {
+      if (s.dist[c] <= 0) continue;
+      const r = E.backtrack(grid, s, c), last = r.length - 1;
+      for (let i = 1; i <= last; i++) {
+        if ((strict || i % step === 0 || i === last) && isAcid(r[i].x, r[i].y)) break;
+        if (i % step !== 0 && i !== last) continue;
+        const k = grid.idx(r[i].x, r[i].y), ticks = Math.ceil(i / step), mid = i !== last;
+        const old = out.get(k);
+        if (!old || ticks < old.ticks || (ticks === old.ticks && old.mid && !mid)) out.set(k, { click: r[last], stop: r[i], ticks, mid });
+      }
+    }
+    return out;
+  }
+
+  // Fewest clicks from start to target without touching acid, then fewest ticks. plan: [{ click, stop }],
+  // where stop is where you are when you click next (stop !== click: re-click mid-run on that tick).
+  function acidSolve(grid, isAcid, start, target, run, strict, maxClicks) {
+    const key = (t) => grid.idx(t.x, t.y), goal = key(target), limit = maxClicks || 5;
+    const best = new Map([[key(start), { clicks: 0, ticks: 0, prev: null }]]);
+    const better = (a, b) => !b || a.clicks < b.clicks || (a.clicks === b.clicks && a.ticks < b.ticks);
+    const open = [{ tile: start, clicks: 0, ticks: 0 }];
+    while (open.length) {
+      open.sort((a, b) => a.clicks - b.clicks || a.ticks - b.ticks);
+      const cur = open.shift(), ck = key(cur.tile), rec = best.get(ck);
+      if (rec.clicks !== cur.clicks || rec.ticks !== cur.ticks) continue;
+      if (ck === goal) {
+        const plan = [];
+        for (let at = goal; best.get(at).prev; at = key(best.get(at).prev.from)) plan.unshift(best.get(at).prev.step);
+        return { clicks: cur.clicks, ticks: cur.ticks, plan };
+      }
+      if (cur.clicks >= limit) continue;
+      for (const [k, mv] of acidMoves(grid, isAcid, cur.tile, run, strict)) {
+        const cand = { clicks: cur.clicks + 1, ticks: cur.ticks + mv.ticks, prev: { from: cur.tile, step: { click: mv.click, stop: mv.stop } } };
+        if (!better(cand, best.get(k))) continue;
+        best.set(k, cand);
+        open.push({ tile: mv.stop, clicks: cand.clicks, ticks: cand.ticks });
+      }
+    }
+    return null;
+  }
+
+  // Acid tiles the game's route touches (strict: any tile; else tick stops only).
+  function acidTouches(tiles, isAcid, run, strict) {
+    const step = run ? 2 : 1, last = tiles.length - 1, out = [];
+    for (let i = 1; i <= last; i++) {
+      if ((strict || i % step === 0 || i === last) && isAcid(tiles[i].x, tiles[i].y)) out.push(tiles[i]);
+    }
+    return out;
+  }
+
+  // opts: { run, strict, amount: 'light' | 'medium' | 'heavy' }
+  function acidPuzzle(rng, opts) {
+    const run = opts.run !== false, strict = opts.strict !== false, [hits, lo, hi] = ACID_HITS[opts.amount] || ACID_HITS.medium;
+    for (let attempt = 0; attempt < 60; attempt++) {
+      const g = new E.Grid(ACID_SIZE, ACID_SIZE), b = (ACID_SIZE - 5) >> 1;
+      const boss = { x: b, y: b, w: 5, h: 5 };
+      for (let y = b; y < b + 5; y++) for (let x = b; x < b + 5; x++) g.setBlocked(x, y, true);
+      for (let k = rng.int(2, 5); k > 0; k--) g.setBlocked(rng.int(1, ACID_SIZE - 2), rng.int(1, ACID_SIZE - 2), true);
+      const acid = new Set();
+      for (let h = 0; h < hits; h++) {
+        const d = rng.int(0, 3);
+        for (let n = rng.int(lo, hi); n > 0; n--) {
+          const along = rng.int(1, 5), across = rng.int(-2, 6);
+          const x = d === 0 ? b + across : d === 1 ? b + 4 + along : d === 2 ? b + across : b - along;
+          const y = d === 0 ? b + 4 + along : d === 1 ? b + across : d === 2 ? b - along : b + across;
+          if (g.inBounds(x, y) && !g.isBlocked(x, y)) acid.add(g.idx(x, y));
+        }
+      }
+      const isAcid = (x, y) => acid.has(g.idx(x, y));
+      const clean = (x, y) => g.inBounds(x, y) && !g.isBlocked(x, y) && !isAcid(x, y);
+      let start = null;
+      for (let t = 0; t < 100 && !start; t++) {
+        const x = rng.int(0, ACID_SIZE - 1), y = rng.int(0, ACID_SIZE - 1), c = Math.max(Math.abs(x - 9), Math.abs(y - 9));
+        if (c >= 3 && c <= 8 && clean(x, y)) start = { x, y };
+      }
+      if (!start) continue;
+      const s0 = E.search(g, start.x, start.y, null);
+      for (let t = 0; t < 30; t++) {
+        const x = rng.int(0, ACID_SIZE - 1), y = rng.int(0, ACID_SIZE - 1), i = g.idx(x, y);
+        if (!clean(x, y) || s0.dist[i] < 6 || s0.dist[i] > 16) continue;
+        const target = { x, y };
+        const direct = acidTouches(E.backtrack(g, s0, i), isAcid, run, strict);
+        if (!direct.length) continue;
+        const sol = acidSolve(g, isAcid, start, target, run, strict, 4);
+        if (!sol || sol.clicks < 2) continue;
+        return { grid: g, boss, acid: [...acid].map((k) => ({ x: k % g.w, y: Math.floor(k / g.w) })), start, target, direct, solution: sol };
+      }
+    }
+    return null;
+  }
+
   const GENERATORS = { trace: genTrace, step: genStep, tick: genTick, unreach: genUnreach, melee: genMelee };
 
   // opts: { level: 1-3 (default 3), terrain: 'any' | one of TERRAINS, size, run, seed }.
@@ -367,5 +470,5 @@
     return null;
   }
 
-  return { TERRAINS, LEVELS, makeRng, genTerrain, generate, dodgeWave, dodgeHit, splatIndex };
+  return { TERRAINS, LEVELS, makeRng, genTerrain, generate, dodgeWave, dodgeHit, splatIndex, acidPuzzle, acidSolve, acidTouches };
 });

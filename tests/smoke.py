@@ -174,7 +174,29 @@ with sync_playwright() as p:
     page.keyboard.press("0")
     page.wait_for_timeout(300)
     dg = "window.__trainer.st.dg"
-    # Puzzle style (default): a gold tile survives, the obvious calm tile is a trap.
+    # Acid floor (default style): following the solver's plan is clean at par; clicking the flag isn't.
+    plan = page.evaluate(f"{dg}.acid.best.plan")
+    for s in plan:
+        click_tile(page, s["click"]["x"], s["click"]["y"])
+        page.wait_for_function(f"(() => {{ const d = {dg}; return d.pos.x === {s['stop']['x']} && d.pos.y === {s['stop']['y']} && (d.route.length === 0 || {str(s['click'] != s['stop']).lower()}); }})()", timeout=20000)
+    page.wait_for_function(f"{dg}.acid.done", timeout=5000)
+    res = page.evaluate(f"(() => {{ const a = {dg}.acid; return [a.touched, a.clicks, a.best.clicks]; }})()")
+    if res[0] != 0 or res[1] != res[2]:
+        failures.append(f"acid: following the plan gave touched/clicks/best = {res}")
+    page.screenshot(path=str(SHOTS / "acid_review.png"))
+    page.keyboard.press("Enter")
+    page.wait_for_timeout(200)
+    target = page.evaluate(f"{dg}.acid.target")
+    click_tile(page, target["x"], target["y"])
+    page.wait_for_function(f"{dg}.acid.done", timeout=20000)
+    if page.evaluate(f"{dg}.acid.touched") == 0:
+        failures.append("acid: clicking the flag directly should touch acid")
+    page.keyboard.press("Enter")
+    page.wait_for_timeout(200)
+    page.screenshot(path=str(SHOTS / "acid.png"))
+    page.select_option("#dgStyle", "puzzle")
+    page.wait_for_timeout(200)
+    # Puzzle style: a gold tile survives, the obvious calm tile is a trap.
     for pick, want in (("winners[0]", True), ("naive", False)):
         target = page.evaluate(f"{dg}.puzzle.wave.{pick}")
         click_tile(page, target["x"], target["y"])

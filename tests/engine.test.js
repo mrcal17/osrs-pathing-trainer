@@ -323,6 +323,34 @@ test('dodge waves: solvable, obvious click is a trap, outcomes match findPath ro
   assert.ok(made >= tries * 0.8, `only ${made}/${tries} waves built`);
 });
 
+test('acid floor: best plans replay clean on game routes; clicking the flag touches acid', () => {
+  for (const strict of [true, false]) {
+    for (const run of [true, false]) {
+      for (let seed = 1; seed <= 12; seed++) {
+        const P = S.acidPuzzle(S.makeRng(seed * 31 + (strict ? 1 : 0) + (run ? 2 : 0)), { run, strict, amount: seed % 3 ? 'medium' : 'heavy' });
+        assert.ok(P, `built ${strict}/${run}/${seed}`);
+        const acid = new Set(P.acid.map((a) => a.x + ',' + a.y)), isAcid = (x, y) => acid.has(x + ',' + y);
+        let pos = P.start, touched = 0;
+        for (const s of P.solution.plan) {
+          // Walk the game's route to the click tick by tick until reaching the planned stop.
+          const r = E.findPath(P.grid, pos, { x: s.click.x, y: s.click.y }).tiles, step = run ? 2 : 1;
+          let i = 0;
+          while (!(r[i].x === s.stop.x && r[i].y === s.stop.y)) {
+            const j = Math.min(i + step, r.length - 1);
+            for (const c of strict ? r.slice(i + 1, j + 1) : [r[j]]) if (isAcid(c.x, c.y)) touched++;
+            assert.ok(j > i, 'plan stop is on the route');
+            i = j;
+          }
+          pos = s.stop;
+        }
+        assert.deepStrictEqual(pos, P.target);
+        assert.strictEqual(touched, 0, 'plan is clean');
+        assert.ok(P.solution.clicks >= 2 && P.direct.length > 0);
+      }
+    }
+  }
+});
+
 test('Beginner and Easy levels stay small and short', () => {
   for (const level of [1, 2]) {
     const L = S.LEVELS[level];
