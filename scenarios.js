@@ -267,14 +267,14 @@
   const activeAt = (grid, m, x, y, k) => (m.get(grid.idx(x, y)) || []).some((s) => s.land <= k && k < s.until);
 
   // First hit (tick and tile) for a route (start tile first) that starts moving on clickTick, or null.
-  // Normal rule: only the tile you end each tick on counts. Strict: every tile stepped on that tick.
-  function dodgeHit(grid, tiles, m, run, strict, horizon, clickTick) {
+  // Only the tile you end each tick on counts: a run tick covers 2 tiles and the one passed over is safe.
+  function dodgeHit(grid, tiles, m, run, horizon, clickTick) {
     const step = run ? 2 : 1, last = tiles.length - 1;
     let i = 0;
     for (let k = 1; k <= horizon; k++) {
       const j = k < clickTick ? 0 : Math.min(i + step, last);
-      const checked = strict && j > i ? tiles.slice(i + 1, j + 1) : [tiles[j]];
-      for (const c of checked) if (activeAt(grid, m, c.x, c.y, k)) return { tick: k, x: c.x, y: c.y };
+      const c = tiles[j];
+      if (activeAt(grid, m, c.x, c.y, k)) return { tick: k, x: c.x, y: c.y };
       i = j;
     }
     return null;
@@ -286,9 +286,9 @@
   // the game's route to a tile just outside the band gets open gaps on every tick stop (and, running,
   // often pools on the tiles it passes mid-tick). The solver then checks every click; a wave is kept
   // only if the nearest calm tile (no splat ever) is a trap and most calm tiles near the answer are too.
-  // opts: { run, strict, delay (extra warning ticks), clickTick (tick the click is processed on) }
+  // opts: { run, delay (extra warning ticks), clickTick (tick the click is processed on) }
   function dodgeWave(rng, grid, pos, opts) {
-    const run = opts.run !== false, strict = !!opts.strict, D = opts.delay || 0, clickTick = opts.clickTick || 1;
+    const run = opts.run !== false, D = opts.delay || 0, clickTick = opts.clickTick || 1;
     const step = run ? 2 : 1;
     const s0 = E.search(grid, pos.x, pos.y, null);
     const cheb = (x, y) => Math.max(Math.abs(x - pos.x), Math.abs(y - pos.y));
@@ -315,7 +315,7 @@
           const j = onRoute.get(grid.idx(x, y));
           if (c <= 1) add(x, y, j ? Math.max(2, tickOf(j) + 1) : 2, 'drop');
           else if (j !== undefined) {
-            const stop = strict || !run || j % step === 0 || j === route.length - 1;
+            const stop = !run || j % step === 0 || j === route.length - 1;
             if (!stop && rng.chance(0.65)) add(x, y, 1, 'field');
             else add(x, y, tickOf(j) + rng.int(1, 2), 'drop');
           } else if (rng.chance(dens)) add(x, y, 1, 'field');
@@ -327,7 +327,7 @@
         const d = s0.dist[i];
         if (d <= 0 || d > step * (H - clickTick + 1)) continue;
         const x = i % grid.w, y = (i - x) / grid.w;
-        const hit = dodgeHit(grid, E.backtrack(grid, s0, i), m, run, strict, H + D, clickTick);
+        const hit = dodgeHit(grid, E.backtrack(grid, s0, i), m, run, H + D, clickTick);
         ends.push({ x, y, dist: d, win: !hit, calm: !m.has(i), hit });
       }
       const winners = ends.filter((e) => e.win);
@@ -354,16 +354,16 @@
   const ACID_SIZE = 19, ACID_HITS = { light: [8, 2, 3], medium: [16, 2, 3], heavy: [24, 3, 4] };
 
   // Clean tiles you can end a tick on after one click from `from`: every tick stop along the game's
-  // route to every clicked tile, up to the first acid touch (strict: any route tile; else stops only).
+  // route to every clicked tile, up to the first tick stop on acid (tiles run over mid-tick are safe).
   // Each keeps the fastest way there (fewest ticks), preferring arriving over a mid-run stop.
-  function acidMoves(grid, isAcid, from, run, strict) {
+  function acidMoves(grid, isAcid, from, run) {
     const s = E.search(grid, from.x, from.y, null), step = run ? 2 : 1, out = new Map();
     for (let c = 0; c < grid.w * grid.h; c++) {
       if (s.dist[c] <= 0) continue;
       const r = E.backtrack(grid, s, c), last = r.length - 1;
       for (let i = 1; i <= last; i++) {
-        if ((strict || i % step === 0 || i === last) && isAcid(r[i].x, r[i].y)) break;
         if (i % step !== 0 && i !== last) continue;
+        if (isAcid(r[i].x, r[i].y)) break;
         const k = grid.idx(r[i].x, r[i].y), ticks = Math.ceil(i / step), mid = i !== last;
         const old = out.get(k);
         if (!old || ticks < old.ticks || (ticks === old.ticks && old.mid && !mid)) out.set(k, { click: r[last], stop: r[i], ticks, mid });
@@ -374,7 +374,7 @@
 
   // Fewest clicks from start to target without touching acid, then fewest ticks. plan: [{ click, stop }],
   // where stop is where you are when you click next (stop !== click: re-click mid-run on that tick).
-  function acidSolve(grid, isAcid, start, target, run, strict, maxClicks) {
+  function acidSolve(grid, isAcid, start, target, run, maxClicks) {
     const key = (t) => grid.idx(t.x, t.y), goal = key(target), limit = maxClicks || 5;
     const best = new Map([[key(start), { clicks: 0, ticks: 0, prev: null }]]);
     const better = (a, b) => !b || a.clicks < b.clicks || (a.clicks === b.clicks && a.ticks < b.ticks);
@@ -389,7 +389,7 @@
         return { clicks: cur.clicks, ticks: cur.ticks, plan };
       }
       if (cur.clicks >= limit) continue;
-      for (const [k, mv] of acidMoves(grid, isAcid, cur.tile, run, strict)) {
+      for (const [k, mv] of acidMoves(grid, isAcid, cur.tile, run)) {
         const cand = { clicks: cur.clicks + 1, ticks: cur.ticks + mv.ticks, prev: { from: cur.tile, step: { click: mv.click, stop: mv.stop } } };
         if (!better(cand, best.get(k))) continue;
         best.set(k, cand);
@@ -399,18 +399,18 @@
     return null;
   }
 
-  // Acid tiles the game's route touches (strict: any tile; else tick stops only).
-  function acidTouches(tiles, isAcid, run, strict) {
+  // Acid tiles the game's route ends a tick on.
+  function acidTouches(tiles, isAcid, run) {
     const step = run ? 2 : 1, last = tiles.length - 1, out = [];
     for (let i = 1; i <= last; i++) {
-      if ((strict || i % step === 0 || i === last) && isAcid(tiles[i].x, tiles[i].y)) out.push(tiles[i]);
+      if ((i % step === 0 || i === last) && isAcid(tiles[i].x, tiles[i].y)) out.push(tiles[i]);
     }
     return out;
   }
 
-  // opts: { run, strict, amount: 'light' | 'medium' | 'heavy' }
+  // opts: { run, amount: 'light' | 'medium' | 'heavy' }
   function acidPuzzle(rng, opts) {
-    const run = opts.run !== false, strict = opts.strict !== false, [hits, lo, hi] = ACID_HITS[opts.amount] || ACID_HITS.medium;
+    const run = opts.run !== false, [hits, lo, hi] = ACID_HITS[opts.amount] || ACID_HITS.medium;
     for (let attempt = 0; attempt < 60; attempt++) {
       const g = new E.Grid(ACID_SIZE, ACID_SIZE), b = (ACID_SIZE - 5) >> 1;
       const boss = { x: b, y: b, w: 5, h: 5 };
@@ -439,9 +439,9 @@
         const x = rng.int(0, ACID_SIZE - 1), y = rng.int(0, ACID_SIZE - 1), i = g.idx(x, y);
         if (!clean(x, y) || s0.dist[i] < 6 || s0.dist[i] > 16) continue;
         const target = { x, y };
-        const direct = acidTouches(E.backtrack(g, s0, i), isAcid, run, strict);
+        const direct = acidTouches(E.backtrack(g, s0, i), isAcid, run);
         if (!direct.length) continue;
-        const sol = acidSolve(g, isAcid, start, target, run, strict, 4);
+        const sol = acidSolve(g, isAcid, start, target, run, 4);
         if (!sol || sol.clicks < 2) continue;
         return { grid: g, boss, acid: [...acid].map((k) => ({ x: k % g.w, y: Math.floor(k / g.w) })), start, target, direct, solution: sol };
       }

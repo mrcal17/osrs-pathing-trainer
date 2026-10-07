@@ -58,7 +58,7 @@
     dg: { grid: null, pos: null, npcs: [], route: [], pending: null, seg: null, dest: null, click: null,
       tick: 0, tickAt: 0, timer: 0, raf: 0, showPath: true, last: null, hazards: true,
       hp: 99, hits: 0, splats: [], wave: 0, nextWave: 3, dead: false, paused: false, hitFx: null,
-      showStops: true, strict: saved.dodgeStyleV2 ? !!saved.dodgeStrict : true, best: saved.dodgeBest || 0, rng: null,
+      showStops: true, best: saved.dodgeBest || 0, rng: null,
       style: ['acid', 'puzzle', 'survival'].includes(saved.dodgeStyleV2) ? saved.dodgeStyleV2 : 'acid',
       preview: false, puzzle: null, trail: [], acid: null, boss: null, acidAmount: saved.acidAmount || 'medium',
       ac: saved.acidStats || { n: 0, clean: 0, best: 0, streak: 0 },
@@ -77,7 +77,7 @@
     const sb = st.sb;
     try {
       localStorage.setItem(STORE, JSON.stringify({
-        mode: st.mode, dodgeStrict: st.dg.strict, dodgeBest: st.dg.best, dodgeStyleV2: st.dg.style, dodgePuzzle: st.dg.pz, acidAmount: st.dg.acidAmount, acidStats: st.dg.ac, level: st.level, terrain: st.terrain, size: st.size, run: st.run, overlay: st.overlay,
+        mode: st.mode, dodgeBest: st.dg.best, dodgeStyleV2: st.dg.style, dodgePuzzle: st.dg.pz, acidAmount: st.dg.acidAmount, acidStats: st.dg.ac, level: st.level, terrain: st.terrain, size: st.size, run: st.run, overlay: st.overlay,
         stats: st.stats, misses: st.misses,
         sandbox: sb.grid ? { grid: sb.grid.toJSON(), src: sb.src, npc: sb.npc } : null,
       }));
@@ -783,7 +783,7 @@
   // ---- dodge: floor hazards on top of the roam tick loop -------------------------------------
   // Waves come from Scenarios.dodgeWave: a band of pools and closing gaps around you that you have to
   // cross, checked so some click survives while the nearest calm-looking tile is a trap. A pool hits
-  // you if a tick ends with your true tile on it (strict: any tile stepped on that tick). The
+  // you only if a tick ends with your true tile on it; a tile run over mid-tick never hurts. The
   // pathfinder ignores splats, as the game's does. Puzzle style: the clock waits, you get one click.
   // Survival style: the same waves in real time with 2 extra warning ticks.
 
@@ -809,7 +809,7 @@
 
   function nextAcid() {
     const dg = st.dg, rng = S.makeRng((Math.random() * 4294967296) >>> 0);
-    const P = S.acidPuzzle(rng, { run: st.run, strict: dg.strict, amount: dg.acidAmount });
+    const P = S.acidPuzzle(rng, { run: st.run, amount: dg.acidAmount });
     dg.rng = rng;
     Object.assign(dg, { npcs: [], route: [], pending: null, seg: null, dest: null, click: null, last: null, trail: [], hitFx: null, puzzle: null, paused: false });
     if (!P) { dg.acid = null; renderDodgeInfo(); return; }
@@ -824,14 +824,11 @@
   function acidTick(dg, seg) {
     const a = dg.acid;
     if (!a || a.done) return;
-    const checked = dg.strict && seg.length > 1 ? seg.slice(1) : [dg.pos];
-    let n = 0;
-    for (const c of checked) if (poolAt(dg, c.x, c.y, dg.tick)) n++;
-    if (n) {
-      a.touched += n;
-      dg.hitFx = { at: performance.now(), dmg: Math.min(7 * n, dg.rng.int(n, 7 * n)) };
+    if (poolAt(dg, dg.pos.x, dg.pos.y, dg.tick)) {
+      a.touched++;
+      dg.hitFx = { at: performance.now(), dmg: dg.rng.int(1, 7) };
     }
-    for (const c of seg.slice(1)) dg.trail.push({ x: c.x, y: c.y, hit: poolAt(dg, c.x, c.y, dg.tick) && (dg.strict || same(c, dg.pos)) });
+    for (const c of seg.slice(1)) dg.trail.push({ x: c.x, y: c.y, hit: poolAt(dg, c.x, c.y, dg.tick) && same(c, dg.pos) });
     if (same(dg.pos, a.target) && !dg.route.length && !dg.pending) {
       a.done = true;
       const s = dg.ac, clean = a.touched === 0, par = clean && a.clicks <= a.best.clicks;
@@ -847,7 +844,7 @@
   // Lay a wave down relative to the current tick. delay = extra warning ticks; clickTick = the tick
   // the solver assumes your click lands on.
   function placeWave(dg, delay, clickTick) {
-    const w = S.dodgeWave(dg.rng, dg.grid, dg.pos, { run: st.run, strict: dg.strict, delay, clickTick });
+    const w = S.dodgeWave(dg.rng, dg.grid, dg.pos, { run: st.run, delay, clickTick });
     if (!w) return null;
     const t0 = dg.tick;
     dg.splats = dg.splats.concat(w.splats.map((s) => ({ x: s.x, y: s.y, kind: s.kind, land: t0 + s.land, until: t0 + s.until })));
@@ -871,9 +868,7 @@
   function dodgeTick(dg, seg) {
     if (dg.style === 'acid') return acidTick(dg, seg);
     const t = dg.tick, pz = dg.puzzle;
-    const checked = dg.strict && seg.length > 1 ? seg.slice(1) : [dg.pos];
-    let dmg = 0, at = null;
-    for (const c of checked) if (poolAt(dg, c.x, c.y, t)) { dmg += dg.rng.int(8, 15); at = at || c; }
+    const dmg = poolAt(dg, dg.pos.x, dg.pos.y, t) ? dg.rng.int(8, 15) : 0;
     if (dmg) {
       if (!pz) dg.hp = Math.max(0, dg.hp - dmg);
       dg.hits++;
@@ -881,7 +876,7 @@
     }
     if (pz) {
       dg.trail.push({ x: dg.pos.x, y: dg.pos.y, tick: t - pz.wave.t0, hit: !!dmg });
-      if (dmg && !pz.first) pz.first = { tick: t - pz.wave.t0, x: at.x, y: at.y };
+      if (dmg && !pz.first) pz.first = { tick: t - pz.wave.t0, x: dg.pos.x, y: dg.pos.y };
       if (t - pz.wave.t0 >= pz.wave.horizon) finishPuzzle(dg);
       return;
     }
@@ -922,7 +917,7 @@
       h += `<p class="meta">Clean ${s.clean}/${s.n} · at best click count ${s.streak} in a row (best ${s.best})</p>`;
       if (!a) h += "<p>Couldn't build a puzzle. Press Next.</p>";
       else if (!a.done) {
-        h += `<p>Get to the <b class="y">flag</b> without touching acid. Clicks so far: <b>${a.clicks}</b>${a.touched ? ` · <span class="r">acid touched ${a.touched}×</span>` : ''}.</p>`;
+        h += `<p>Get to the <b class="y">flag</b> without ending a tick on acid. Clicks so far: <b>${a.clicks}</b>${a.touched ? ` · <span class="r">acid touched ${a.touched}×</span>` : ''}.</p>`;
       } else {
         h += a.touched === 0 ? `<p class="verdict ok">✓ Clean in ${plural(a.clicks, 'click')}</p>` : `<p class="verdict bad">✗ Touched acid ${a.touched}×</p>`;
         h += `<p>Fewest clicks for a clean run: <b>${a.best.clicks}</b>${a.touched === 0 && a.clicks > a.best.clicks ? ` (you used ${a.clicks})` : ''}. The gold numbers show one way to do it.</p>`;
@@ -955,7 +950,6 @@
     $('dgPause').classList.toggle('hidden', dg.style !== 'survival');
     $('dgPause').textContent = dg.paused ? 'Resume' : 'Pause';
     $('dgRestart').textContent = dg.style === 'survival' ? 'Restart' : 'Next puzzle';
-    $('dgStrict').checked = dg.strict;
     $('acidAmount').value = dg.acidAmount;
     $('dgStyle').value = dg.style;
   }
@@ -965,9 +959,8 @@
       the acid never goes away. The pathfinder ignores acid, so clicking where you want to go often runs you
       straight through it. Get to the flag clean, in as few clicks as you can. Clicks are picked up on the next tick
       and you can re-click mid-run.</p>
-      <p class="hint">By default every tile you step on counts, like Vorkath's acid (“standing on or running over”).
-      The wiki doesn't confirm whether Doom's acid hurts when you only run over it, so you can switch that off below.
-      Here the boss blocks movement, which is also an assumption.</p>`,
+      <p class="hint">Acid hurts only if a tick <b>ends</b> with you standing on it. Running covers 2 tiles in one tick,
+      so the tile you pass over in between is safe. Here the boss blocks movement, which is an assumption.</p>`,
     puzzle: `<p>Solid green pools hurt from the moment you can reach them. Dashed splats show the tick they land on (a
       closing gap). A pool hits you only if a tick <b>ends</b> with you standing on it, so tiles you run over
       mid-tick are safe.</p>
@@ -1109,7 +1102,7 @@
         ctx.restore();
       }
       if (tiles.length < 2) return;
-      for (const c of S.acidTouches(tiles, (x, y) => poolAt(dg, x, y, dg.tick), st.run, dg.strict)) {
+      for (const c of S.acidTouches(tiles, (x, y) => poolAt(dg, x, y, dg.tick), st.run)) {
         ctx.strokeStyle = C.bad;
         ctx.lineWidth = 3;
         ctx.strokeRect(px(c.x) + 3, py(c.y, g) + 3, st.ts - 6, st.ts - 6);
@@ -1187,7 +1180,7 @@
     render();
   }
 
-  // Run and strict change which clicks work, so rebuild a puzzle that hasn't been clicked yet.
+  // Run changes which clicks work, so rebuild a puzzle that hasn't been clicked yet.
   function dodgeSettingChanged() {
     const dg = st.dg;
     persist();
@@ -1662,12 +1655,10 @@
   $('overlay').addEventListener('change', (e) => { st.overlay = e.target.value; e.target.blur(); persist(); render(); });
   $('exPath').addEventListener('change', (e) => { st.ex.showPath = e.target.checked; e.target.blur(); });
   $('dgStops').addEventListener('change', (e) => { st.dg.showStops = e.target.checked; e.target.blur(); });
-  $('dgStrict').addEventListener('change', (e) => { st.dg.strict = e.target.checked; e.target.blur(); dodgeSettingChanged(); });
   $('dgPreview').addEventListener('change', (e) => { st.dg.preview = e.target.checked; e.target.blur(); });
   $('acidAmount').addEventListener('change', (e) => { st.dg.acidAmount = e.target.value; e.target.blur(); dodgeSettingChanged(); });
   $('dgStyle').addEventListener('change', (e) => {
     st.dg.style = e.target.value;
-    st.dg.strict = st.dg.style === 'acid'; // each style's default hit rule
     e.target.blur();
     persist();
     restartDodge();

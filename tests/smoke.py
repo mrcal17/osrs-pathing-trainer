@@ -170,7 +170,7 @@ with sync_playwright() as p:
     if len(probe) != 2 or probe[0] != start:
         failures.append(f"explore re-route sources: {probe}, start {start}")
 
-    # Dodge: end-of-tick hits, run-over is safe, strict mode counts every stepped tile.
+    # Dodge: end-of-tick hits, run-over is safe.
     page.keyboard.press("0")
     page.wait_for_timeout(300)
     dg = "window.__trainer.st.dg"
@@ -215,9 +215,9 @@ with sync_playwright() as p:
         for (let y = 0; y < g.h; y++) for (let x = 0; x + 2 < g.w; x++)
           if (!g.isBlocked(x, y) && !g.isBlocked(x + 1, y) && !g.isBlocked(x + 2, y) && !g.hasWallE(x, y) && !g.hasWallE(x + 1, y)) return {{ x, y }};
       }})()""")
-    def dodge_case(stand_still, strict):
+    def dodge_case(stand_still):
         return page.evaluate(f"""(async () => {{ const dg = {dg}, L = {lane};
-            Object.assign(dg, {{ hp: 99, hits: 0, nextWave: 1e9, strict: {str(strict).lower()}, pending: null, dead: false, paused: true }});
+            Object.assign(dg, {{ hp: 99, hits: 0, nextWave: 1e9, pending: null, dead: false, paused: true }});
             dg.pos = {{ x: L.x, y: L.y }};
             const t = dg.tick + 1;
             dg.route = {('[]' if stand_still else '[{ x: L.x + 1, y: L.y }, { x: L.x + 2, y: L.y }]')};
@@ -227,13 +227,11 @@ with sync_playwright() as p:
             dg.paused = true;
             return dg.hits; }})()""")
     page.keyboard.press("r") if not page.evaluate("window.__trainer.st.run") else None
-    if dodge_case(True, False) != 1:
+    if dodge_case(True) != 1:
         failures.append("dodge: standing on a pool at tick end should hit")
-    if dodge_case(False, False) != 0:
+    if dodge_case(False) != 0:
         failures.append("dodge: running over a pool mid-tick should be safe")
-    if dodge_case(False, True) != 1:
-        failures.append("dodge: strict mode should count a run-over tile")
-    page.evaluate(f"(() => {{ const dg = {dg}; Object.assign(dg, {{ strict: false, paused: false, nextWave: dg.tick + 1 }}); }})()")
+    page.evaluate(f"(() => {{ const dg = {dg}; Object.assign(dg, {{ paused: false, nextWave: dg.tick + 1 }}); }})()")
     page.wait_for_timeout(1300)
     click_tile(page, 1, 1)
     page.wait_for_timeout(700)

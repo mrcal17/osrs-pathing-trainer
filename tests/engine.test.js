@@ -300,19 +300,19 @@ test('Normal never asks routes an empty map would give too', () => {
 
 test('dodge waves: solvable, obvious click is a trap, outcomes match findPath routes', () => {
   let made = 0, tries = 0;
-  for (const strict of [false, true]) {
+  {
     for (const run of [true, false]) {
-      for (let seed = 1; seed <= 25; seed++) {
+      for (let seed = 1; seed <= 50; seed++) {
         tries++;
-        const rng = S.makeRng(seed * 7 + (strict ? 1 : 0) + (run ? 2 : 0));
+        const rng = S.makeRng(seed * 7 + (run ? 2 : 0));
         const g = S.genTerrain(rng, 16, 'light');
         let pos = null;
         for (let y = 5; y < 11 && !pos; y++) for (let x = 5; x < 11 && !pos; x++) if (!g.isBlocked(x, y)) pos = T(x, y);
-        const w = S.dodgeWave(rng, g, pos, { run, strict });
+        const w = S.dodgeWave(rng, g, pos, { run });
         if (!w) continue;
         made++;
         const m = S.splatIndex(g, w.splats);
-        const outcome = (e) => S.dodgeHit(g, E.findPath(g, pos, { x: e.x, y: e.y }).tiles, m, run, strict, w.horizon, 1);
+        const outcome = (e) => S.dodgeHit(g, E.findPath(g, pos, { x: e.x, y: e.y }).tiles, m, run, w.horizon, 1);
         for (const e of w.winners) assert.strictEqual(outcome(e), null, 'winner survives');
         assert.ok(outcome(w.naive), 'obvious click gets hit');
         assert.ok(!w.splats.some((s) => s.x === w.naive.x && s.y === w.naive.y), 'obvious click looks calm');
@@ -324,11 +324,11 @@ test('dodge waves: solvable, obvious click is a trap, outcomes match findPath ro
 });
 
 test('acid floor: best plans replay clean on game routes; clicking the flag touches acid', () => {
-  for (const strict of [true, false]) {
+  {
     for (const run of [true, false]) {
-      for (let seed = 1; seed <= 12; seed++) {
-        const P = S.acidPuzzle(S.makeRng(seed * 31 + (strict ? 1 : 0) + (run ? 2 : 0)), { run, strict, amount: seed % 3 ? 'medium' : 'heavy' });
-        assert.ok(P, `built ${strict}/${run}/${seed}`);
+      for (let seed = 1; seed <= 24; seed++) {
+        const P = S.acidPuzzle(S.makeRng(seed * 31 + (run ? 2 : 0)), { run, amount: seed % 3 ? 'medium' : 'heavy' });
+        assert.ok(P, `built ${run}/${seed}`);
         const acid = new Set(P.acid.map((a) => a.x + ',' + a.y)), isAcid = (x, y) => acid.has(x + ',' + y);
         let pos = P.start, touched = 0;
         for (const s of P.solution.plan) {
@@ -337,7 +337,7 @@ test('acid floor: best plans replay clean on game routes; clicking the flag touc
           let i = 0;
           while (!(r[i].x === s.stop.x && r[i].y === s.stop.y)) {
             const j = Math.min(i + step, r.length - 1);
-            for (const c of strict ? r.slice(i + 1, j + 1) : [r[j]]) if (isAcid(c.x, c.y)) touched++;
+            if (isAcid(r[j].x, r[j].y)) touched++;
             assert.ok(j > i, 'plan stop is on the route');
             i = j;
           }
